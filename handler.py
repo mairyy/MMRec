@@ -22,6 +22,8 @@ class DataHandler:
         self.seq_file = predir + 'seq'
         self.tst_file = predir + 'tst'
         self.neg_file = predir + 'neg'
+        self.text_file = predir + 'text'
+        self.vision_file = predir + 'vision'
 
     def load_adj(self, filename):
         with open(filename, 'rb') as fs:
@@ -34,6 +36,12 @@ class DataHandler:
         with open(filename, 'rb') as fs:
             ret = pickle.load(fs)
         return ret
+
+    def load_feat(self):
+        with open(self.text_file, 'rb') as fs:
+           self.t_feat =  pickle.load(fs)
+        with open(self.vision_file, 'rb') as fs:
+           self.v_feat =  pickle.load(fs)
 
     def normalize(self, mat):
         degree = np.array(mat.sum(axis=-1))
@@ -63,6 +71,7 @@ class DataHandler:
         seq = self.load_seq(self.seq_file)
         neg = self.load_seq(self.neg_file)
         neg = np.array(neg)
+        self.load_feat()
         args.user, args.item = len(seq), trn.shape[0]
         self.ii_dok = trn.todok()
         self.ii_adj = self.make_torch_adj(trn)
