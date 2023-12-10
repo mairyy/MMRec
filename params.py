@@ -1,4 +1,5 @@
 import argparse
+import torch
 
 def ParseArgs():
     parser = argparse.ArgumentParser(description='Model Params')
@@ -14,7 +15,7 @@ def ParseArgs():
     parser.add_argument('--num_reco_neg', default=40, type=int, help='number of negative items for reconstruction task')
     parser.add_argument('--reg', default=1e-6, type=float, help='weight decay regularizer')
     parser.add_argument('--ssl_reg', default=1e-2, type=float, help='contrastive regularizer')
-    parser.add_argument('--latdim', default=64, type=int, help='id embedding size')
+    parser.add_argument('--latdim', default=64, type=int, help='embedding size')
     parser.add_argument('--mask_depth', default=3, type=int, help='k steps for generating transitional path')
     parser.add_argument('--path_prob', default=0.5, type=float, help='random walk sample probability')
     parser.add_argument('--num_attention_heads', default=4, type=int, help='number of heads in attention')
@@ -27,9 +28,10 @@ def ParseArgs():
     parser.add_argument("--attention_probs_dropout_prob", type=float, default=0.3, help="attention dropout p")
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3, help="hidden dropout p")
     parser.add_argument('--save_path', default='tem', help='file name to save model and training record')
-    parser.add_argument('--mode', default='graph_t', help='graph or no graph or attention')
-    parser.add_argument('--f_dim', default=1024, type=int, help='feature size')
+    parser.add_argument('--mode', default='graph_t', help='graph or no graph')
+    parser.add_argument('--att_mode', default='remove', help='remove transformer recommender or not')
+    parser.add_argument('--f_dim', default=512, type=int, help='feature dim')
+    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu', help='device')
     parser.add_argument('--f_new_dim', default=64, type=int, help='new feature size after downsize')
     return parser.parse_args()
-
 args = ParseArgs()

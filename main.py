@@ -9,15 +9,13 @@ import torch as t
 import pickle
 import sys
 import os
-from torch import nn
 
 t.manual_seed(args.seed)
 np.random.seed(args.seed)
 
 class Coach:
-    def __init__(self, handler, args):
+    def __init__(self, handler):
         self.handler = handler
-        self.args = args
 
         log(f"Users: {args.user}, Items(+1): {args.item}")
         self.metrics = dict()
@@ -69,17 +67,14 @@ class Coach:
     def prepare_model(self):
         self.encoder = Encoder().cuda()
         self.decoder = Decoder().cuda()
-        self.item_graph = Item_Graph(handler).cuda()
-        # self.graph_decoder = Decoder().cuda()
-        self.recommender = SASRec().cuda()
+        self.item_graph = Item_Graph(args.data, handler).cuda()
+        self.recommender = SASRec(handler).cuda()
         self.masker = RandomMaskSubgraphs()
         self.sampler = LocalGraph()
-        self.loss_fc = nn.CrossEntropyLoss()
         self.opt = t.optim.Adam(
             [{"params": self.encoder.parameters()},
              {"params": self.decoder.parameters()},
              {"params": self.item_graph.parameters()},
-            #  {"params": self.graph_decoder.parameters()},
              {"params": self.recommender.parameters()}],
             lr=args.lr, weight_decay=0
         )
@@ -111,93 +106,66 @@ class Coach:
         self.encoder.train()
         self.decoder.train()
         self.item_graph.train()
-        # self.graph_decoder.train()
         self.recommender.train()
         self.masker.train()
         self.sampler.train()
 
         loss_his = []
-        ep_loss, ep_loss_main, ep_loss_reco, ep_loss_mask, ep_loss_graph = 0, 0, 0, 0, 0
+        ep_loss, ep_loss_main, ep_loss_reco, ep_loss_mask = 0, 0, 0, 0
         trn_loader = self.handler.trn_loader
         steps = trn_loader.dataset.__len__() // args.trn_batch
-        with t.autograd.set_detect_anomaly(True):
-            for i, batch_data in enumerate(trn_loader):
 
-                if i % args.mask_steps == 0:
-                    sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.get_ego_embeds()) #orginal code
-                    # sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, t.cat((self.encoder.item_id, self.recommender.item_emb), dim=1)) #concate before ranking
-                    masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
+        for i, batch_data in enumerate(trn_loader):
 
-                batch_data = [i.cuda() for i in batch_data]
-                seq, pos, neg = batch_data
-                # print(pos, pos.shape)
+            if i % args.mask_steps == 0:
+                sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.item_id) #orginal code
+                # sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, t.cat((self.encoder.item_id, self.recommender.item_emb), dim=1)) #concate before ranking
+                masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
 
-                item_emb, item_emb_his = self.encoder(masked_adj)
-                
-                if args.mode == 'graph_t' or args.mode == 'text':
-                    mm_pre = self.item_graph.t_feat
-                elif args.mode == 'graph_v' or args.mode == 'vision':
-                    mm_pre = self.item_graph.v_feat
-                else:
-                    mm_pre = self.item_graph.item_rep
-                
-                if args.mode == 'graph_t' or args.mode == 'graph_v' or args.mode == 'graph_t_v':
-                    mm_emb, mm_emb_his = self.item_graph(seq, item_emb)
-                else: 
-                    mm_emb= self.item_graph(seq, item_emb)
+            batch_data = [i.cuda() for i in batch_data]
+            seq, pos, neg = batch_data
 
-                seq_emb = self.recommender(seq, item_emb, mm_emb)
-                item_emb = t.cat((item_emb, mm_pre), dim=1)
-                tar_msk = pos > 0
-                # print(seq_emb.shape, item_emb[pos].shape, tar_msk.shape)
-                # loss_main = new_ce_loss(self.loss_fc, seq_emb, item_emb, seq, pos, target)
-                loss_main = cross_entropy(seq_emb, item_emb[pos], item_emb[neg], tar_msk)
-                # loss_graph = cal_loss_graph(mm_emb, pos, neg)
-                # print(item_emb, item_emb.shape)
-                # print(item_emb[pos], item_emb[pos].shape)
-                pos = self.sample_pos_edges(masked_edg)
-                neg = self.sample_neg_edges(pos, self.handler.ii_dok)
-                loss_reco = self.decoder(item_emb_his, pos, neg)
-                # loss_graph = self.graph_decoder(mm_emb_his, pos, neg)
+            item_emb, item_emb_his = self.encoder(masked_adj)
+            mm_emb = self.item_graph()
+            seq_emb = self.recommender(seq, item_emb, mm_emb)
+            tar_msk = pos > 0
+            loss_main = cross_entropy(seq_emb, item_emb[pos], item_emb[neg], tar_msk)
 
-                loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.decoder) + calc_reg_loss(self.recommender)) * args.reg
+            pos = self.sample_pos_edges(masked_edg)
+            neg = self.sample_neg_edges(pos, self.handler.ii_dok)
+            loss_reco = self.decoder(item_emb_his, pos, neg)
 
-                loss = loss_main + loss_reco + loss_regu
-                loss_his.append(loss_main)
+            loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.decoder) + calc_reg_loss(self.recommender)) * args.reg
 
-                if i % args.mask_steps == 0:
-                    reward = calc_reward(loss_his, args.eps)
-                    loss_mask = -sample_scr.mean() * reward
-                    ep_loss_mask += loss_mask
-                    loss_his = loss_his[-1:]
-                    loss += loss_mask
+            loss = loss_main + loss_reco + loss_regu
+            loss_his.append(loss_main)
 
-                ep_loss += loss.item()
-                ep_loss_main += loss_main.item()
-                ep_loss_reco += loss_reco.item()
-                # ep_loss_graph += loss_graph.item()
-                log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f, loss_reco = %.3f        ' % (i, steps, loss, loss_main, loss_regu, loss_reco), save=False, oneline=True)
-                sys.stdout.flush()
+            if i % args.mask_steps == 0:
+                reward = calc_reward(loss_his, args.eps)
+                loss_mask = -sample_scr.mean() * reward
+                ep_loss_mask += loss_mask
+                loss_his = loss_his[-1:]
+                loss += loss_mask
 
-                self.opt.zero_grad()
-                loss.backward(retain_graph=True)
-                self.opt.step()
+            ep_loss += loss.item()
+            ep_loss_main += loss_main.item()
+            ep_loss_reco += loss_reco.item()
+            log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f, loss_reco = %.3f        ' % (i, steps, loss, loss_main, loss_regu, loss_reco), save=False, oneline=True)
+            sys.stdout.flush()
+
+            self.opt.zero_grad()
+            loss.backward(retain_graph=True)
+            self.opt.step()
 
         ret = dict()
         ret['loss'] = ep_loss / steps
         ret['loss_main'] = ep_loss_main / steps
         ret['loss_reco'] = ep_loss_reco / steps
-        # ret['loss_graph'] = ep_loss_graph / steps
         ret['loss_mask'] = ep_loss_mask / (steps // args.mask_steps)
 
         return ret
 
     def test_epoch(self):
-        # self.encoder.eval()
-        # self.decoder.eval()
-        # self.recommender.eval()
-        # self.masker.eval()
-        # self.sampler.eval()
         self.encoder.eval()
         self.decoder.eval()
         self.item_graph.eval()
@@ -212,35 +180,19 @@ class Coach:
         group_num = [0] * 4
         num = tst_loader.dataset.__len__()
         steps = num // args.tst_batch
-        # print(num)
 
         with t.no_grad():
             for i, batch_data in enumerate(tst_loader):
                 batch_data = [i.cuda() for i in batch_data]
                 seq, pos, neg = batch_data
                 item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
-                if args.mode == 'graph_t' or args.mode == 'text':
-                    mm_pre = self.item_graph.t_feat
-                elif args.mode == 'graph_v' or args.mode == 'vision':
-                    mm_pre = self.item_graph.v_feat
-                else:
-                    mm_pre = self.item_graph.item_rep
-
-                if args.mode == 'graph_t' or args.mode == 'graph_v' or args.mode == 'graph_t_v':
-                    mm_emb, mm_emb_his = self.item_graph(seq, item_emb)
-                else: 
-                    mm_emb= self.item_graph(seq, item_emb)
-
+                mm_emb = self.item_graph()
                 seq_emb = self.recommender(seq, item_emb, mm_emb)
+                # seq_emb = self.recommender(seq, item_emb)
                 seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)
-                item_emb = t.cat((item_emb, mm_pre), dim=1)
-                all_ids = t.arange(item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda()
-                
-                
-                all_emb = item_emb[all_ids]  # (batch, num_items, latdim)
-                all_scr = t.sum(t.unsqueeze(seq_emb, 1) * all_emb, -1)  # (batch, num_items)
-
-
+                all_ids = t.cat([pos, neg], -1) # (batch, 100)
+                all_emb = item_emb[all_ids] # (batch, 100, latdim)
+                all_scr = t.sum(t.unsqueeze(seq_emb, 1) * all_emb, -1) # (batch, 100)
                 seq_len = (seq > 0).cpu().numpy().sum(-1)
                 h5, n5, h10, n10, h20, n20, h50, n50, gp_h20, gp_n20, gp_num= \
                     self.calc_res(all_scr.cpu().numpy(), all_ids.cpu().numpy(), pos.cpu().numpy(), seq_len)
@@ -285,94 +237,6 @@ class Coach:
         print(f'Test result: h5={ep_h5:.4f} n5={ep_n5:.4f} h10={ep_h10:.4f} n10={ep_n10:.4f} h20={ep_h20:.4f} n20={ep_n20:.4f} h50={ep_h50:.4f} n50={ep_n50:.4f}')
 
         return ret
-
-    # def test_epoch(self):
-    #     self.encoder.eval()
-    #     self.decoder.eval()
-    #     self.item_graph.eval()
-    #     # self.graph_decoder.eval()
-    #     self.recommender.eval()
-    #     self.masker.eval()
-    #     self.sampler.eval()
-
-    #     tst_loader = self.handler.tst_loader
-    #     ep_h5, ep_n5, ep_h10, ep_n10, ep_h20, ep_n20, ep_h50, ep_n50  = [0] * 8
-    #     group_h20 = [0] * 4
-    #     group_n20 = [0] * 4
-    #     group_num = [0] * 4
-    #     num = tst_loader.dataset.__len__()
-    #     steps = num // args.tst_batch
-
-    #     with t.no_grad():
-    #         for i, batch_data in enumerate(tst_loader):
-    #             batch_data = [i.cuda() for i in batch_data]
-    #             seq, pos, neg = batch_data
-    #             item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
-    #             if args.mode == 'graph_t' or args.mode == 'text':
-    #                 mm_pre = self.item_graph.t_feat
-    #             elif args.mode == 'graph_v' or args.mode == 'vision':
-    #                 mm_pre = self.item_graph.v_feat
-    #             else:
-    #                 mm_pre = self.item_graph.item_rep
-
-    #             if args.mode == 'graph_t' or args.mode == 'graph_v' or args.mode == 'graph_t_v':
-    #                 mm_emb, mm_emb_his = self.item_graph(seq, item_emb)
-    #             else: 
-    #                 mm_emb= self.item_graph(seq, item_emb)
-
-    #             seq_emb = self.recommender(seq, item_emb, mm_emb)
-    #             # seq_emb = self.recommender(seq, item_emb)
-    #             seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)
-    #             all_ids = t.cat([pos, neg], -1) # (batch, 100)
-    #             # all_emb = item_emb[all_ids] # (batch, 100, latdim)
-    #             tt_emb = t.cat((item_emb, mm_pre), dim=1)
-    #             all_emb = tt_emb[all_ids] # (batch, 100, latdim)
-    #             # print(item_emb.shape, seq_emb.shape, all_emb.shape)
-    #             all_scr = t.sum(t.unsqueeze(seq_emb, 1) * all_emb, -1) # (batch, 100)
-    #             seq_len = (seq > 0).cpu().numpy().sum(-1)
-    #             h5, n5, h10, n10, h20, n20, h50, n50, gp_h20, gp_n20, gp_num= \
-    #                 self.calc_res(all_scr.cpu().numpy(), all_ids.cpu().numpy(), pos.cpu().numpy(), seq_len)
-    #             ep_h5 += h5
-    #             ep_n5 += n5
-    #             ep_h10 += h10
-    #             ep_n10 += n10
-    #             ep_h20 += h20
-    #             ep_n20 += n20
-    #             ep_h50 += h50
-    #             ep_n50 += n50
-    #             for j in range(4):
-    #                 group_h20[j] += gp_h20[j]
-    #                 group_n20[j] += gp_n20[j]
-    #                 group_num[j] += gp_num[j]
-    #             log('Steps %d/%d: hr@5 = %.2f, ndcg@5 = %.2f, hr@10 = %.2f, ndcg@10 = %.2f, hr@20 = %.2f, ndcg@20 = %.2f, hr@50 = %.2f, ndcg@50 = %.2f          ' % (i, steps, h5, n5, h10, n10, h20, n20, h50, n50), save=False, oneline=True)
-    #             sys.stdout.flush()
-
-    #     ep_h5 /= num
-    #     ep_n5 /= num
-    #     ep_h10 /= num 
-    #     ep_n10 /= num 
-    #     ep_h20 /= num 
-    #     ep_n20 /= num 
-    #     ep_h50 /= num 
-    #     ep_n50 /= num 
-
-    #     for i in range(4):
-    #         group_h20[i] /= group_num[i]
-    #         group_n20[i] /= group_num[i]
-
-    #     ret = dict()
-    #     ret['hr@10'] = ep_h10
-    #     ret['ndcg@10'] = ep_n10
-    #     ret['hr@5'] = ep_h5
-    #     ret['ndcg@5'] = ep_n5
-    #     ret['hr@20'] = ep_h20
-    #     ret['ndcg@20'] = ep_n20
-    #     ret['hr@50'] = ep_h50
-    #     ret['ndcg@50'] = ep_n50
-
-    #     print(f'Test result: h5={ep_h5:.4f} n5={ep_n5:.4f} h10={ep_h10:.4f} n10={ep_n10:.4f} h20={ep_h20:.4f} n20={ep_n20:.4f} h50={ep_h50:.4f} n50={ep_n50:.4f}')
-
-    #     return ret
 
     def calc_res(self, scores, tst_ids, pos_ids, seq_len):
         group_h20 = [0] * 4
@@ -436,8 +300,6 @@ class Coach:
         content = {
             'encoder': self.encoder,
             'decoder': self.decoder,
-            'item_graph': self.item_graph,
-            # 'graph_decoder': self.graph_decoder,
             'recommender': self.recommender,
         }
         t.save(content, './Models/' + args.save_path + '.mod')
@@ -448,14 +310,10 @@ class Coach:
         ckp = t.load('./Models/' + args.load_model + '.mod')
         self.encoder = ckp['encoder']
         self.decoder= ckp['decoder']
-        self.item_graph= ckp['item_graph']
-        # self.graph_decoder= ckp['graph_decoder']
         self.recommender = ckp['recommender']
         self.opt = t.optim.Adam(
             [{"params": self.encoder.parameters()},
              {"params": self.decoder.parameters()},
-             {"params": self.item_graph.parameters()},
-            #  {"params": self.graph_decoder.parameters()},
              {"params": self.recommender.parameters()}],
             lr=args.lr, weight_decay=0
         )
@@ -468,8 +326,6 @@ class Coach:
 if __name__ == '__main__':
     logger.saveDefault = True
     
-    if (args.mode == 'attention_v_t'):
-        args.f_new_dim = 0
     print(args)
 
     log('Start')
@@ -477,5 +333,5 @@ if __name__ == '__main__':
     handler.load_data()
     log('Load Data')
 
-    coach = Coach(handler, args)
+    coach = Coach(handler)
     coach.run()

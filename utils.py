@@ -2,7 +2,6 @@ import torch as t
 import numpy as np
 from params import args
 import torch.nn.functional as F
-from torch import nn
 
 def calc_reg_loss(model):
     ret = 0
@@ -51,24 +50,14 @@ def calc_min_reward(lastLosses):
     return min(curDecrease.detach().cpu().numpy() / avgDecrease.detach().cpu().numpy(), 1)
 
 def cross_entropy(seq_out, pos_emb, neg_emb, tar_msk):
-    seq_emb = seq_out.view(-1, args.latdim+args.f_new_dim)
-    pos_emb = pos_emb.view(-1, args.latdim+args.f_new_dim)
-    neg_emb = neg_emb.view(-1, args.latdim+args.f_new_dim)
+    seq_emb = seq_out.view(-1, args.latdim)
+    pos_emb = pos_emb.view(-1, args.latdim)
+    neg_emb = neg_emb.view(-1, args.latdim)
     pos_scr = t.sum(pos_emb * seq_emb, -1)
     neg_scr = t.sum(neg_emb * seq_emb, -1)
     tar_msk = tar_msk.view(-1).float()
-    # print(pos_scr.shape, tar_msk.shape)
     loss = t.sum(
         - t.log(t.sigmoid(pos_scr) + 1e-24) * tar_msk -
         t.log(1 - t.sigmoid(neg_scr) + 1e-24) * tar_msk
     ) / t.sum(tar_msk)
     return loss
-
-def cal_loss_graph(embs, pos, neg):
-    pos_emb = embs[pos]
-    neg_emb = embs[neg]
-    pos_scr = t.exp(pos_emb)
-    neg_scr = t.exp(neg_emb)
-    neg_scr = t.sum(neg_scr) + t.sum(pos_scr)
-    loss = -t.sum(pos_scr / (neg_scr + 1e-8) + 1e-8)
-    return loss    

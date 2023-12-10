@@ -13,62 +13,64 @@ init = nn.init.xavier_uniform_
 uniform_init = nn.init.uniform
 
 class Item_Graph(nn.Module):
-    def __init__(self, handler):
+    def __init__(self, dataset, handler):
         super(Item_Graph, self).__init__()
         self.knn_k = 5
         self.k = 40
         self.device = 'cuda' if t.cuda.is_available() else 'cpu'
+        self.dataset = dataset
         self.mm_image_weight = 0.2
-        self.mode = args.mode
-
-        dim = args.latdim if args.mode == 'attention_v_t' or args.mode == 'graph_t' or args.mode == 'text'  or args.mode == 'vision' or args.mode == 'graph_v' else int(args.latdim/2)
-        self.pos_emb = nn.Parameter(init(t.empty(args.max_seq_len, dim)))
-
-        self.t_weight = nn.Parameter(init(t.empty(args.f_dim, dim))).to(self.device)
-        self.t_bias = nn.Parameter(init(t.empty(args.item, dim))).to(self.device)
-        self.v_weight = nn.Parameter(init(t.empty(args.f_dim, dim))).to(self.device)
-        self.v_bias = nn.Parameter(init(t.empty(args.item, dim))).to(self.device)
+        # self.mode = args.mode
+        # self.att_mode = args.att_mode
         
+        #if attention mode
+        self.t_weight = nn.Parameter(init(t.empty(args.f_dim, int(args.latdim/2)))).to(self.device)
+        self.t_bias = nn.Parameter(init(t.empty(args.item, int(args.latdim/2)))).to(self.device)
+        self.v_weight = nn.Parameter(init(t.empty(args.f_dim, int(args.latdim/2)))).to(self.device)
+        self.v_bias = nn.Parameter(init(t.empty(args.item, int(args.latdim/2)))).to(self.device)
+
+        self.text_embedding = nn.Embedding.from_pretrained(handler.t_feat, freeze=False).to(self.device)
+        self.image_embedding = nn.Embedding.from_pretrained(handler.v_feat, freeze=False).to(self.device)
+
         self.gcn_layers = nn.Sequential(*[GCNLayer() for i in range(args.num_gcn_layers)])
-        
+
         self.t_feat = t.matmul(handler.t_feat.to(self.device), self.t_weight) + self.t_bias
         self.v_feat = t.matmul(handler.v_feat.to(self.device), self.v_weight) + self.v_bias
         self.item_rep = t.cat((self.v_feat, self.t_feat), dim=1)
+        
+    # if self.v_feat is not None:
+    # if (self.mode == 'graph_v'):
+        indices, image_adj = self.get_knn_adj_mat(self.image_embedding.weight.detach())
+        self.mm_adj = image_adj
+    # if self.t_feat is not None:
+    # if (self.mode == 'graph_t'):
+        indices, text_adj = self.get_knn_adj_mat(self.text_embedding.weight.detach())
+        self.mm_adj = text_adj
+    # if self.v_feat is not None and self.t_feat is not None:
+    # if (self.mode == 'graph_t_v' or self.mode == 'remove'):
+        self.mm_adj = self.mm_image_weight * image_adj + (1.0 - self.mm_image_weight) * text_adj
 
-        self.text_embedding = nn.Embedding.from_pretrained(self.t_feat, freeze=False).to(self.device)
-        self.image_embedding = nn.Embedding.from_pretrained(self.v_feat, freeze=False).to(self.device)
+    def forward(self):
+        # if (self.mode == 'graph_t_v'):
+        item_rep = self.item_rep
+        # elif (self.mode == 'graph_t'):
+        #     item_rep = self.t_feat
+        # elif (self.mode == 'text'):
+        #     return t.matmul(self.t_feat, self.weight) + self.bias
+        # elif (self.mode == 't_v'):
+        #     item_rep = t.cat((self.v_feat, self.t_feat), dim=1)
+        #     return t.matmul(item_rep, self.weight) + self.bias
+        # elif (self.mode == 'attention_v_t'):
+        #     t_feat = t.matmul(self.t_feat, self.t_weight) + self.t_bias
+        #     v_feat = t.matmul(self.v_feat, self.v_weight) + self.v_bias
+        #     return t_feat, v_feat
 
-        if args.mode == 'graph_v' or args.mode == 'graph_t_v':
-        # if self.v_feat is not None:
-            indices, image_adj = self.get_knn_adj_mat(self.image_embedding.weight.detach())
-            self.mm_adj = image_adj
-        if args.mode == 'graph_t' or args.mode == 'graph_t_v':
-        # if self.t_feat is not None:
-            indices, text_adj = self.get_knn_adj_mat(self.text_embedding.weight.detach())
-            self.mm_adj = text_adj
-        if args.mode == 'graph_t_v':
-        # if self.v_feat is not None and self.t_feat is not None:
-            self.mm_adj = self.mm_image_weight * image_adj + (1.0 - self.mm_image_weight) * text_adj
-
-    def forward(self, sequence, item_emb):
-        if (self.mode == 'graph_t_v'):
-            item_rep = self.item_rep
-        elif (self.mode == 'graph_t'):
-            item_rep = self.t_feat
-        elif (self.mode == 'graph_v'):
-            item_rep = self.v_feat
-        elif (self.mode == 'text'):
-            return self.t_feat
-        elif (self.mode == 'vision'):
-            return self.v_feat
-        elif (self.mode == 't_v'):
-            item_rep = self.item_rep
-            return item_rep
-        #having graph item item
-        item_embs = [item_rep]
+        # item_rep = t.matmul(item_rep, self.weight) + self.bias
+        h = item_rep
         for i in self.gcn_layers:
-            item_embs.append(t.sparse.mm(self.mm_adj, item_embs[-1]))
-        return sum(item_embs), item_embs
+            h = t.sparse.mm(self.mm_adj, h)
+        item_rep = item_rep + h
+        return item_rep
 
     def get_knn_adj_mat(self, mm_embedding):
         context_norm = mm_embedding.div(t.norm(mm_embedding, p=2, dim=-1, keepdim=True))
@@ -94,11 +96,25 @@ class Item_Graph(nn.Module):
         values = rows_inv_sqrt * cols_inv_sqrt
         return t.sparse.FloatTensor(indices, values, adj_size)
     
+    
 def sparse_dropout(x, keep_prob):
     msk = (t.rand(x._values().size()) + keep_prob).floor().type(t.bool)
     idx = x._indices()[:, msk]
     val = x._values()[msk]
     return t.sparse.FloatTensor(idx, val, x.shape).cuda()
+
+class MLP(nn.Module):
+    def __init__(self):
+        super(MLP, self).__init__()
+        self.device = 'cuda' if t.cuda.is_available() else 'cpu'
+        self.layers = nn.Sequential(
+            nn.Linear(512, 256).to(self.device),
+            nn.ReLU().to(self.device),
+            nn.Linear(256, 32).to(self.device)
+        )  
+    def forward(self, x):
+        x = self.layers(x)
+        return x
 
 class Encoder(nn.Module):
     def __init__(self):
@@ -194,13 +210,34 @@ class GCNLayer(nn.Module):
         return t.spmm(adj, embeds)
 
 class SASRec(nn.Module):
-    def __init__(self):
+    def __init__(self, handler):
         super(SASRec, self).__init__()
+        self.handler = handler
+        self.device = args.device
         self.pos_emb = nn.Parameter(init(t.empty(args.max_seq_len, args.latdim)))
         self.layers = nn.Sequential(*[TransformerLayer() for i in range(args.num_trm_layers)])
-        self.LayerNorm = nn.LayerNorm(args.latdim+args.f_new_dim)
+        self.LayerNorm = nn.LayerNorm(args.latdim)
         self.dropout = nn.Dropout(args.hidden_dropout_prob)
         self.apply(self.init_weights)
+        self.attention = DIFTransformerEncoder()
+        self.t_weight = nn.Parameter(init(t.empty(args.f_dim, args.latdim))).to(self.device)
+        self.t_bias = nn.Parameter(init(t.empty(args.item, args.latdim))).to(self.device)
+        self.v_weight = nn.Parameter(init(t.empty(args.f_dim, args.latdim))).to(self.device)
+        self.v_bias = nn.Parameter(init(t.empty(args.item, args.latdim))).to(self.device)
+
+        self.t_feat = t.matmul(self.handler.t_feat.to(self.device), self.t_weight) + self.t_bias
+        self.v_feat = t.matmul(self.handler.v_feat.to(self.device), self.v_weight) + self.v_bias
+        # if (args.mode == 'attention_v_t'):
+        #     self.t_feat, self.v_feat = Item_Graph(dataset=args.data).forward()
+        #     # print(t_feat.shape, v_feat.shape)
+        #     # self.t_feat = t_feat.unsqueeze(1)
+        #     # self.v_feat = v_feat.unsqueeze(1)
+        #     # print(self.t_feat.shape, self.v_feat.shape)
+        #     # self.all_feat = t.stack([t_feat, v_feat], dim=0)
+        #     self.attention = DIFTransformerEncoder()
+        # else:
+        #     self.item_rep = Item_Graph(dataset=args.data)
+        #     self.item_emb = self.item_rep().cuda()
     
     def get_seq_emb(self, sequence, item_emb, mm_emb):
         # print('1', sequence, sequence.size(0))
@@ -214,31 +251,95 @@ class SASRec(nn.Module):
         itm_emb = item_emb[sequence]
         # print('5\'', itm_emb, itm_emb.shape)
         pos_emb = self.pos_emb[pos_ids]
-        seq_emb = itm_emb + pos_emb
-        seq_emb = t.cat((seq_emb, mm_emb[sequence]), dim=2)
+        if (args.mode == 'remove'):
+            extended_attention_mask = self.get_attention_mask(sequence)
+            t_feat = self.t_feat[sequence]
+            v_feat = self.v_feat[sequence]
+            mm_emb = mm_emb[sequence]
+            # t_feat = t_feat.unsqueeze(1)
+            # v_feat = v_feat.unsqueeze(1)
+            # print(t_feat.shape, v_feat.shape)
+            # print(self.all_feat.shape)
+            # all_feat = t.stack([t_feat, v_feat], dim=0)
+            all_feat = []
+            all_feat.append(t_feat)
+            all_feat.append(v_feat)
+            all_feat.append(mm_emb)
+            # all_feat = t.cat((t_feat, v_feat))
+            # all_feat = t_feat
+            # print('1', all_feat.shape)
+            seq_emb_list = self.attention(itm_emb, all_feat, pos_emb, extended_attention_mask, True)
+            # print(seq_emb_list)
+            # seq_emb = seq_emb_list
+            # seq_emb = []
+            # for seq in seq_emb_list:
+            #     seq = self.LayerNorm(seq)
+            #     seq = self.dropout(seq)
+            #     seq_emb.append(seq)
+            seq_emb = seq_emb_list[-1]
+            seq_emb = seq_emb + pos_emb
+        else:
+            seq_emb = itm_emb + pos_emb
         seq_emb = self.LayerNorm(seq_emb)
         seq_emb = self.dropout(seq_emb)
         return seq_emb
 
-    def forward(self, input_ids, item_emb, mm_emb):
-        attention_mask = (input_ids > 0).long()
-        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2) # torch.int64
+    def get_attention_mask(self, item_seq):
+        """Generate left-to-right uni-directional attention mask for multi-head attention."""
+        attention_mask = (item_seq > 0).long()
+        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # torch.int64
+        # mask for left-to-right unidirectional
         max_len = attention_mask.size(-1)
         attn_shape = (1, max_len, max_len)
-
-        subsequent_mask = t.triu(t.ones(attn_shape), diagonal=1) # torch.uint8
+        subsequent_mask = t.triu(t.ones(attn_shape), diagonal=1)  # torch.uint8
         subsequent_mask = (subsequent_mask == 0).unsqueeze(1)
-        subsequent_mask = subsequent_mask.long()
-        subsequent_mask = subsequent_mask.cuda()
-
+        subsequent_mask = subsequent_mask.long().to(item_seq.device)
         extended_attention_mask = extended_attention_mask * subsequent_mask
-        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
+        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+        return extended_attention_mask
 
-        seq_embs = [self.get_seq_emb(input_ids, item_emb, mm_emb)]
-        for trm in self.layers:
-            seq_embs.append(trm(seq_embs[-1], extended_attention_mask))
-        seq_emb = sum(seq_embs)
+    def forward(self, input_ids, item_emb, mm_emb):
+        if (args.att_mode == 'remove'):
+            #remove transformer
+            seq_emb = self.get_seq_emb(input_ids, item_emb, mm_emb)
+            # sequence = input_ids
+            # seq_len = sequence.size(1)
+            # pos_ids = t.arange(seq_len, dtype=t.long, device=sequence.device)
+            # pos_ids = pos_ids.unsqueeze(0).expand_as(sequence)
+            # itm_emb = item_emb[sequence]
+            # pos_emb = self.pos_emb[pos_ids]
+            # extended_attention_mask = self.get_attention_mask(sequence)
+            # t_feat = self.t_feat[sequence]
+            # v_feat = self.v_feat[sequence]
+            # all_feat = []
+            # all_feat.append(t_feat)
+            # all_feat.append(v_feat)
+            # seq_emb_list = self.attention(itm_emb, all_feat, pos_emb, extended_attention_mask, True)
+            # seq_emb = seq_emb_list[-1]
+            # seq_emb = self.LayerNorm(seq_emb)
+            # seq_emb = self.dropout(seq_emb)
+        
+        else:
+        #no remove transformer
+            attention_mask = (input_ids > 0).long()
+            extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2) # torch.int64
+            max_len = attention_mask.size(-1)
+            attn_shape = (1, max_len, max_len)
+
+            subsequent_mask = t.triu(t.ones(attn_shape), diagonal=1) # torch.uint8
+            subsequent_mask = (subsequent_mask == 0).unsqueeze(1)
+            subsequent_mask = subsequent_mask.long()
+            subsequent_mask = subsequent_mask.cuda()
+
+            extended_attention_mask = extended_attention_mask * subsequent_mask
+            extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
+            extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
+            seq_embs = [self.get_seq_emb(input_ids, item_emb, mm_emb)]
+            for trm in self.layers:
+                seq_embs.append(trm(seq_embs[-1], extended_attention_mask))
+            seq_emb = sum(seq_embs)
 
         return seq_emb
 
@@ -263,17 +364,17 @@ class SelfAttentionLayer(nn.Module):
     def __init__(self):
         super(SelfAttentionLayer, self).__init__()
         self.num_attention_heads = args.num_attention_heads
-        self.attention_head_size = int((args.latdim+args.f_new_dim) / args.num_attention_heads)
+        self.attention_head_size = int(args.latdim / args.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        self.query = nn.Linear(args.latdim+args.f_new_dim, self.all_head_size)
-        self.key = nn.Linear(args.latdim+args.f_new_dim, self.all_head_size)
-        self.value = nn.Linear(args.latdim+args.f_new_dim, self.all_head_size)
+        self.query = nn.Linear(args.latdim, self.all_head_size)
+        self.key = nn.Linear(args.latdim, self.all_head_size)
+        self.value = nn.Linear(args.latdim, self.all_head_size)
 
         self.attn_dropout = nn.Dropout(args.attention_probs_dropout_prob)
 
-        self.dense = nn.Linear(args.latdim+args.f_new_dim, args.latdim+args.f_new_dim)
-        self.LayerNorm = nn.LayerNorm(args.latdim+args.f_new_dim)
+        self.dense = nn.Linear(args.latdim, args.latdim)
+        self.LayerNorm = nn.LayerNorm(args.latdim)
         self.out_dropout = nn.Dropout(args.hidden_dropout_prob)
 
         self.apply(self.init_weights)
@@ -319,11 +420,11 @@ class IntermediateLayer(nn.Module):
     def __init__(self):
         super(IntermediateLayer, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(args.latdim+args.f_new_dim, (args.latdim+args.f_new_dim) * 4, bias=True),
+            nn.Linear(args.latdim, args.latdim * 4, bias=True),
             nn.GELU(),
-            nn.Linear((args.latdim+args.f_new_dim) * 4, args.latdim+args.f_new_dim, bias=True),
+            nn.Linear(args.latdim * 4, args.latdim, bias=True),
             nn.Dropout(args.hidden_dropout_prob),
-            nn.LayerNorm(args.latdim+args.f_new_dim)
+            nn.LayerNorm(args.latdim)
         )
 
     def forward(self, x):
