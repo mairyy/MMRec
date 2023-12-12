@@ -19,7 +19,7 @@ class Coach:
 
         log(f"Users: {args.user}, Items(+1): {args.item}")
         self.metrics = dict()
-        mets = ['loss', 'loss_main', 'hr@10', 'ndcg@10']
+        mets = ['loss', 'loss_main', 'hr@5', 'ndcg@5', 'hr@10', 'ndcg@10', 'hr@20', 'ndcg@20', 'hr@50', 'ndcg@50']
         for met in mets:
             self.metrics['Train' + met] = list()
             self.metrics['Test' + met] = list()
@@ -182,7 +182,7 @@ class Coach:
                 item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
                 seq_emb = self.recommender(seq, item_emb)
                 seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)
-                all_ids = t.cat([pos, neg], -1) # (batch, 100)
+                all_ids = t.arange(item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda() # (batch, 100)
                 all_emb = item_emb[all_ids] # (batch, 100, latdim)
                 all_scr = t.sum(t.unsqueeze(seq_emb, 1) * all_emb, -1) # (batch, 100)
                 seq_len = (seq > 0).cpu().numpy().sum(-1)
@@ -200,7 +200,7 @@ class Coach:
                     group_h20[j] += gp_h20[j]
                     group_n20[j] += gp_n20[j]
                     group_num[j] += gp_num[j]
-                log('Steps %d/%d: hr@10 = %.2f, ndcg@10 = %.2f          ' % (i, steps, h10, n10), save=False, oneline=True)
+                log('Steps %d/%d: hr@5 = %.2f, ndcg@5 = %.2f, hr@10 = %.2f, ndcg@10 = %.2f, hr@20 = %.2f, ndcg@20 = %.2f, hr@50 = %.2f, ndcg@50 = %.2f ' % (i, steps, h5, n5, h10, n10, h20, n20, h50, n50), save=False, oneline=True)
                 sys.stdout.flush()
 
         ep_h5 /= num
@@ -219,6 +219,12 @@ class Coach:
         ret = dict()
         ret['hr@10'] = ep_h10
         ret['ndcg@10'] = ep_n10
+        ret['hr@5'] = ep_h5
+        ret['ndcg@5'] = ep_n5
+        ret['hr@20'] = ep_h20
+        ret['ndcg@20'] = ep_n20
+        ret['hr@50'] = ep_h50
+        ret['ndcg@50'] = ep_n50
 
         print(f'Test result: h5={ep_h5:.4f} n5={ep_n5:.4f} h10={ep_h10:.4f} n10={ep_n10:.4f} h20={ep_h20:.4f} n20={ep_n20:.4f} h50={ep_h50:.4f} n50={ep_n50:.4f}')
 
