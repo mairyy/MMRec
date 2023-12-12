@@ -122,8 +122,9 @@ class Coach:
             seq, pos, neg = batch_data
 
             item_emb, item_emb_his = self.encoder(masked_adj)
-            seq_emb = self.recommender(seq, item_emb)
+            seq_emb = self.recommender(seq, item_emb, handler)
             tar_msk = pos > 0
+            item_emb = t.cat((item_emb, self.recommender.item_feat), dim=1)
             loss_main = cross_entropy(seq_emb, item_emb[pos], item_emb[neg], tar_msk)
 
             pos = self.sample_pos_edges(masked_edg)
@@ -180,10 +181,17 @@ class Coach:
                 batch_data = [i.cuda() for i in batch_data]
                 seq, pos, neg = batch_data
                 item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
-                seq_emb = self.recommender(seq, item_emb)
+                seq_emb = self.recommender(seq, item_emb, handler)
                 seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)
+                # print(seq_emb.shape)
                 all_ids = t.arange(item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda() # (batch, 100)
-                all_emb = item_emb[all_ids] # (batch, 100, latdim)
+                # print("1", item_emb.shape)
+                # print("2", self.recommender.item_feat.shape)
+                all_emb = t.cat((item_emb, self.recommender.item_feat), dim=1)
+                # print("3", all_emb.shape)
+                all_emb = all_emb[all_ids] # (batch, 100, latdim)
+                # print("4", all_emb.shape)
+                # print("5", seq_emb.shape)
                 all_scr = t.sum(t.unsqueeze(seq_emb, 1) * all_emb, -1) # (batch, 100)
                 seq_len = (seq > 0).cpu().numpy().sum(-1)
                 h5, n5, h10, n10, h20, n20, h50, n50, gp_h20, gp_n20, gp_num= \

@@ -114,19 +114,29 @@ class SASRec(nn.Module):
         self.LayerNorm = nn.LayerNorm(args.latdim)
         self.dropout = nn.Dropout(args.hidden_dropout_prob)
         self.apply(self.init_weights)
+        self.device = 'cuda' if t.cuda.is_available() else 'cpu'
 
-    def get_seq_emb(self, sequence, item_emb):
+        #reduce feature's dim
+        self.f_dim = (args.f_dim*2) if args.mode == 'mm' else args.f_dim
+        self.linear = nn.Linear(self.f_dim, args.latdim, bias=True)
+
+    def get_seq_emb(self, sequence, item_emb, item_feat):
         seq_len = sequence.size(1)
         pos_ids = t.arange(seq_len, dtype=t.long, device=sequence.device)
         pos_ids = pos_ids.unsqueeze(0).expand_as(sequence)
         itm_emb = item_emb[sequence]
+        item_feat = item_feat[sequence]
         pos_emb = self.pos_emb[pos_ids]
         seq_emb = itm_emb + pos_emb
         seq_emb = self.LayerNorm(seq_emb)
         seq_emb = self.dropout(seq_emb)
+        # print("1", seq_emb, seq_emb.shape)
+        seq_emb = t.cat((seq_emb, item_feat), dim=2)
+        # print("2",seq_emb, seq_emb.shape)
+        # print("3",item_feat, item_feat.shape)
         return seq_emb
 
-    def forward(self, input_ids, item_emb):
+    def forward(self, input_ids, item_emb, handler):
         attention_mask = (input_ids > 0).long()
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2) # torch.int64
         max_len = attention_mask.size(-1)
@@ -141,7 +151,26 @@ class SASRec(nn.Module):
         extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
 
-        seq_embs = [self.get_seq_emb(input_ids, item_emb)]
+        #reduce feature's dim
+        if args.mode == 'text':
+            t_feat = handler.t_feat.to(self.device)
+            # print(t_feat.shape[0], self.linear)
+            self.item_feat = self.linear(t_feat)
+        if args.mode == 'vision':
+            v_feat = self.linear(handler.v_feat.to(self.device))
+            self.item_feat = v_feat
+        if args.mode == 'mm':
+            t_feat = handler.t_feat.to(self.device)
+            v_feat = handler.v_feat.to(self.device)
+            self.item_feat = self.linear(t.cat((t_feat, v_feat), dim=1))
+        # print(item_feat, item_feat.shape)
+        self.LayerNorm(self.item_feat)
+        # print(item_feat, item_feat.shape)
+        self.dropout(self.item_feat)
+        # print(item_feat, item_feat.shape)
+
+        seq_embs = [self.get_seq_emb(input_ids, item_emb, self.item_feat)]
+        # print(seq_embs, seq_embs[0].shape)
         for trm in self.layers:
             seq_embs.append(trm(seq_embs[-1], extended_attention_mask))
         seq_emb = sum(seq_embs)
@@ -169,17 +198,17 @@ class SelfAttentionLayer(nn.Module):
     def __init__(self):
         super(SelfAttentionLayer, self).__init__()
         self.num_attention_heads = args.num_attention_heads
-        self.attention_head_size = int(args.latdim / args.num_attention_heads)
+        self.attention_head_size = int((args.latdim*2) / args.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        self.query = nn.Linear(args.latdim, self.all_head_size)
-        self.key = nn.Linear(args.latdim, self.all_head_size)
-        self.value = nn.Linear(args.latdim, self.all_head_size)
+        self.query = nn.Linear((args.latdim*2), self.all_head_size)
+        self.key = nn.Linear((args.latdim*2), self.all_head_size)
+        self.value = nn.Linear((args.latdim*2), self.all_head_size)
 
         self.attn_dropout = nn.Dropout(args.attention_probs_dropout_prob)
 
-        self.dense = nn.Linear(args.latdim, args.latdim)
-        self.LayerNorm = nn.LayerNorm(args.latdim)
+        self.dense = nn.Linear((args.latdim*2), (args.latdim*2))
+        self.LayerNorm = nn.LayerNorm((args.latdim*2))
         self.out_dropout = nn.Dropout(args.hidden_dropout_prob)
 
         self.apply(self.init_weights)
@@ -225,11 +254,11 @@ class IntermediateLayer(nn.Module):
     def __init__(self):
         super(IntermediateLayer, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(args.latdim, args.latdim * 4, bias=True),
+            nn.Linear((args.latdim*2), (args.latdim*2) * 4, bias=True),
             nn.GELU(),
-            nn.Linear(args.latdim * 4, args.latdim, bias=True),
+            nn.Linear((args.latdim*2) * 4, (args.latdim*2), bias=True),
             nn.Dropout(args.hidden_dropout_prob),
-            nn.LayerNorm(args.latdim)
+            nn.LayerNorm((args.latdim*2))
         )
 
     def forward(self, x):

@@ -50,9 +50,9 @@ def calc_min_reward(lastLosses):
     return min(curDecrease.detach().cpu().numpy() / avgDecrease.detach().cpu().numpy(), 1)
 
 def cross_entropy(seq_out, pos_emb, neg_emb, tar_msk):
-    seq_emb = seq_out.view(-1, args.latdim)
-    pos_emb = pos_emb.view(-1, args.latdim)
-    neg_emb = neg_emb.view(-1, args.latdim)
+    seq_emb = seq_out.view(-1, args.latdim*2)
+    pos_emb = pos_emb.view(-1, args.latdim*2)
+    neg_emb = neg_emb.view(-1, args.latdim*2)
     pos_scr = t.sum(pos_emb * seq_emb, -1)
     neg_scr = t.sum(neg_emb * seq_emb, -1)
     tar_msk = tar_msk.view(-1).float()
