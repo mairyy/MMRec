@@ -330,7 +330,6 @@ class Coach:
         with open('predicts.csv', 'a', encoding='UTF8') as f:
             writer = csv.writer(f)
             writer.writerow(data)
-            writer.writerow('\n')
 
 if __name__ == '__main__':
     logger.saveDefault = True
