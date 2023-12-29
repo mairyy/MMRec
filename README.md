@@ -2,15 +2,14 @@ Datasets:
 
 - Beauty:
     - Filter 5-core and filter items without both text and vision.
-    - Statistic: 
-\begin{table}[]
-\begin{tabular}{|l|l|l|}
-\hline
-items  & users  & interactions \\ \hline
-12 101 & 22 363 & 198 502      \\ \hline
-\end{tabular}
-\end{table}
+    - Statistic:
+
+| items  | users  | interactions |
+|--------|--------|--------------|
+| 12 101 | 22 363 | 198 502      |
+
     - File's details:
+
 | File   | Details                                 | Link | Note                   |
 |--------|-----------------------------------------|------|------------------------|
 | tst    | seqs with full interaction for testing  |      |                        |
