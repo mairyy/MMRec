@@ -9,6 +9,7 @@ import torch as t
 import pickle
 import sys
 import os
+import csv
 
 t.manual_seed(args.seed)
 np.random.seed(args.seed)
@@ -60,7 +61,7 @@ class Coach:
                     log(self.make_print('Best Result', args.epoch, bestRes, True), bold=True)
                     self.save_history()
             print()
-        reses = self.test_epoch()
+        reses = self.test_epoch(True)
         log(self.make_print('Test', args.epoch, reses, True))
         log(self.make_print('Best Result', args.epoch, bestRes, True), bold=True)
 
@@ -160,7 +161,7 @@ class Coach:
 
         return ret
 
-    def test_epoch(self):
+    def test_epoch(self, logPredict=False):
         self.encoder.eval()
         self.decoder.eval()
         self.recommender.eval()
@@ -187,7 +188,7 @@ class Coach:
                 all_scr = t.sum(t.unsqueeze(seq_emb, 1) * all_emb, -1) # (batch, 100)
                 seq_len = (seq > 0).cpu().numpy().sum(-1)
                 h5, n5, h10, n10, h20, n20, h50, n50, gp_h20, gp_n20, gp_num= \
-                    self.calc_res(all_scr.cpu().numpy(), all_ids.cpu().numpy(), pos.cpu().numpy(), seq_len)
+                    self.calc_res(all_scr.cpu().numpy(), all_ids.cpu().numpy(), pos.cpu().numpy(), seq_len, logPredict)
                 ep_h5 += h5
                 ep_n5 += n5
                 ep_h10 += h10
@@ -230,7 +231,7 @@ class Coach:
 
         return ret
 
-    def calc_res(self, scores, tst_ids, pos_ids, seq_len):
+    def calc_res(self, scores, tst_ids, pos_ids, seq_len, logPredict):
         group_h20 = [0] * 4
         group_n20 = [0] * 4
         group_num = [0] * 4
@@ -274,6 +275,8 @@ class Coach:
             if pos_ids[i] in shoot:
                 h50 += 1
                 n50 += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
+            if logPredict: 
+                self.writePredictedItems(shoot)
         return h5, n5, h10, n10, h20, n20, h50, n50, group_h20, group_n20, group_num
 
     def save_history(self):
@@ -314,6 +317,11 @@ class Coach:
             self.metrics = pickle.load(fs)
 
         log('Model Loaded from ' + args.load_model)
+
+    def writePredictedItems(self, data):
+        with open('predicts.csv', 'a', encoding='UTF8') as f:
+            writer = csv.writer(f)
+            writer.writerow(data)
 
 if __name__ == '__main__':
     logger.saveDefault = True
