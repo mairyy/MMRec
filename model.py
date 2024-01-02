@@ -7,7 +7,6 @@ import numpy as np
 import torch as t
 import math
 import time
-from transformer import *
 from params import args
 
 init = nn.init.xavier_uniform_
