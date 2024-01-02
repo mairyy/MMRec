@@ -134,17 +134,11 @@ class Coach:
 
                 item_emb, item_emb_his = self.encoder(masked_adj)
                 
-                if args.mode == 'graph_t' or args.mode == 'text':
-                    mm_pre = self.item_graph.t_feat
-                elif args.mode == 'graph_v' or args.mode == 'vision':
-                    mm_pre = self.item_graph.v_feat
-                else:
-                    mm_pre = self.item_graph.item_rep
-                
-                if args.mode == 'graph_t' or args.mode == 'graph_v' or args.mode == 'graph_t_v':
-                    mm_emb, mm_emb_his = self.item_graph(seq, item_emb)
-                else: 
-                    mm_emb= self.item_graph(seq, item_emb)
+                mm_pre = self.item_graph.item_embs
+                mm_pre = F.pad(mm_pre, (0, 0, 1, 0), mode='constant', value=np.random.randint(-1, high=1, size=None, dtype=int))
+ 
+                mm_emb= self.item_graph()
+                mm_emb = F.pad(mm_emb, (0, 0, 1, 0), mode='constant', value=np.random.randint(-1, high=1, size=None, dtype=int))
 
                 seq_emb = self.recommender(seq, item_emb, mm_emb)
                 item_emb = t.cat((item_emb, mm_pre), dim=1)
@@ -158,7 +152,6 @@ class Coach:
                 pos = self.sample_pos_edges(masked_edg)
                 neg = self.sample_neg_edges(pos, self.handler.ii_dok)
                 loss_reco = self.decoder(item_emb_his, pos, neg)
-                # loss_graph = self.graph_decoder(mm_emb_his, pos, neg)
 
                 loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.decoder) + calc_reg_loss(self.recommender)) * args.reg
 
@@ -219,17 +212,11 @@ class Coach:
                 batch_data = [i.cuda() for i in batch_data]
                 seq, pos, neg = batch_data
                 item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
-                if args.mode == 'graph_t' or args.mode == 'text':
-                    mm_pre = self.item_graph.t_feat
-                elif args.mode == 'graph_v' or args.mode == 'vision':
-                    mm_pre = self.item_graph.v_feat
-                else:
-                    mm_pre = self.item_graph.item_rep
-
-                if args.mode == 'graph_t' or args.mode == 'graph_v' or args.mode == 'graph_t_v':
-                    mm_emb, mm_emb_his = self.item_graph(seq, item_emb)
-                else: 
-                    mm_emb= self.item_graph(seq, item_emb)
+                mm_pre = self.item_graph.item_embs
+                mm_pre = F.pad(mm_pre, (0, 0, 1, 0), mode='constant', value=np.random.randint(-1, high=1, size=None, dtype=int))
+ 
+                mm_emb= self.item_graph()
+                mm_emb = F.pad(mm_emb, (0, 0, 1, 0), mode='constant', value=np.random.randint(-1, high=1, size=None, dtype=int))
 
                 seq_emb = self.recommender(seq, item_emb, mm_emb)
                 seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)

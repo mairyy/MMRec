@@ -8,6 +8,7 @@ import torch as t
 import math
 import time
 from transformer import *
+from params import args
 
 init = nn.init.xavier_uniform_
 uniform_init = nn.init.uniform
@@ -15,60 +16,36 @@ uniform_init = nn.init.uniform
 class Item_Graph(nn.Module):
     def __init__(self, handler):
         super(Item_Graph, self).__init__()
-        self.knn_k = 5
-        self.k = 40
+        self.knn_k = args.knn
         self.device = 'cuda' if t.cuda.is_available() else 'cpu'
-        self.mm_image_weight = 0.2
+        self.mm_image_weight = args.img_weight
         self.mode = args.mode
-
-        dim = args.latdim if args.mode == 'attention_v_t' or args.mode == 'graph_t' or args.mode == 'text'  or args.mode == 'vision' or args.mode == 'graph_v' else int(args.latdim/2)
-        self.pos_emb = nn.Parameter(init(t.empty(args.max_seq_len, dim)))
-
-        self.t_weight = nn.Parameter(init(t.empty(args.f_dim, dim))).to(self.device)
-        self.t_bias = nn.Parameter(init(t.empty(args.item, dim))).to(self.device)
-        self.v_weight = nn.Parameter(init(t.empty(args.f_dim, dim))).to(self.device)
-        self.v_bias = nn.Parameter(init(t.empty(args.item, dim))).to(self.device)
         
-        self.gcn_layers = nn.Sequential(*[GCNLayer() for i in range(args.num_gcn_layers)])
-        
-        self.t_feat = t.matmul(handler.t_feat.to(self.device), self.t_weight) + self.t_bias
-        self.v_feat = t.matmul(handler.v_feat.to(self.device), self.v_weight) + self.v_bias
-        self.item_rep = t.cat((self.v_feat, self.t_feat), dim=1)
+        self.gcn_layers = nn.Sequential(*[CustomGCN() for i in range(args.num_gcn_layers)])
 
-        self.text_embedding = nn.Embedding.from_pretrained(self.t_feat, freeze=False).to(self.device)
-        self.image_embedding = nn.Embedding.from_pretrained(self.v_feat, freeze=False).to(self.device)
-
-        if args.mode == 'graph_v' or args.mode == 'graph_t_v':
-        # if self.v_feat is not None:
-            indices, image_adj = self.get_knn_adj_mat(self.image_embedding.weight.detach())
-            self.mm_adj = image_adj
-        if args.mode == 'graph_t' or args.mode == 'graph_t_v':
-        # if self.t_feat is not None:
-            indices, text_adj = self.get_knn_adj_mat(self.text_embedding.weight.detach())
+        if self.mode == 'graph_t':
+            self.t_feat = handler.t_feat.to(self.device)
+            indices, text_adj, self.weights = self.get_knn_adj_mat(self.t_feat)
             self.mm_adj = text_adj
-        if args.mode == 'graph_t_v':
-        # if self.v_feat is not None and self.t_feat is not None:
+        if self.mode == 'graph_v':
+            self.v_feat = handler.v_feat.to(self.device)
+            indices, image_adj, self.weights = self.get_knn_adj_mat(self.v_feat)
+            self.mm_adj = image_adj
+        if self.mode == 'graph_mm':
+            self.t_feat = handler.t_feat.to(self.device)
+            self.v_feat = handler.v_feat.to(self.device)
+            indices, text_adj, t_weights = self.get_knn_adj_mat(self.t_feat)
+            indices, image_adj, v_weights = self.get_knn_adj_mat(self.v_feat)
             self.mm_adj = self.mm_image_weight * image_adj + (1.0 - self.mm_image_weight) * text_adj
+            self.weights = self.mm_image_weight * v_weights + (1.0 - self.mm_image_weight) * t_weights
+        
+        self.item_embs = nn.Parameter(init(t.empty(args.item-1, args.latdim)))
 
-    def forward(self, sequence, item_emb):
-        if (self.mode == 'graph_t_v'):
-            item_rep = self.item_rep
-        elif (self.mode == 'graph_t'):
-            item_rep = self.t_feat
-        elif (self.mode == 'graph_v'):
-            item_rep = self.v_feat
-        elif (self.mode == 'text'):
-            return self.t_feat
-        elif (self.mode == 'vision'):
-            return self.v_feat
-        elif (self.mode == 't_v'):
-            item_rep = self.item_rep
-            return item_rep
-        #having graph item item
-        item_embs = [item_rep]
-        for i in self.gcn_layers:
-            item_embs.append(t.sparse.mm(self.mm_adj, item_embs[-1]))
-        return sum(item_embs), item_embs
+    def forward(self):
+        item_embs = [self.item_embs]
+        for i, gcn in enumerate(self.gcn_layers):
+            item_embs.append(gcn(self.mm_adj, item_embs[-1], self.weights))
+        return sum(item_embs)
 
     def get_knn_adj_mat(self, mm_embedding):
         context_norm = mm_embedding.div(t.norm(mm_embedding, p=2, dim=-1, keepdim=True))
@@ -76,14 +53,13 @@ class Item_Graph(nn.Module):
         #k = 5
         _, knn_ind = t.topk(sim, self.knn_k, dim=-1)
         adj_size = sim.size()
-        del sim
         # construct sparse adj
         indices0 = t.arange(knn_ind.shape[0]).to(self.device)
         indices0 = t.unsqueeze(indices0, 1)
         indices0 = indices0.expand(-1, self.knn_k)
         indices = t.stack((t.flatten(indices0), t.flatten(knn_ind)), 0)
         # norm
-        return indices, self.compute_normalized_laplacian(indices, adj_size)
+        return indices, self.compute_normalized_laplacian(indices, adj_size), sim
     
     def compute_normalized_laplacian(self, indices, adj_size):
         adj = t.sparse.FloatTensor(indices, t.ones_like(indices[0]), adj_size)
@@ -99,6 +75,14 @@ def sparse_dropout(x, keep_prob):
     idx = x._indices()[:, msk]
     val = x._values()[msk]
     return t.sparse.FloatTensor(idx, val, x.shape).cuda()
+
+class CustomGCN(nn.Module):
+    def __init__(self):
+        super(CustomGCN, self).__init__()
+
+    def forward(self, adj, embeds, weights):
+        adj = t.mm(adj, weights)
+        return t.spmm(adj, embeds)
 
 class Encoder(nn.Module):
     def __init__(self):
@@ -198,7 +182,7 @@ class SASRec(nn.Module):
         super(SASRec, self).__init__()
         self.pos_emb = nn.Parameter(init(t.empty(args.max_seq_len, args.latdim)))
         self.layers = nn.Sequential(*[TransformerLayer() for i in range(args.num_trm_layers)])
-        self.LayerNorm = nn.LayerNorm(args.latdim+args.f_new_dim)
+        self.LayerNorm = nn.LayerNorm(args.latdim+args.latdim)
         self.dropout = nn.Dropout(args.hidden_dropout_prob)
         self.apply(self.init_weights)
     
@@ -215,6 +199,8 @@ class SASRec(nn.Module):
         # print('5\'', itm_emb, itm_emb.shape)
         pos_emb = self.pos_emb[pos_ids]
         seq_emb = itm_emb + pos_emb
+        # print(mm_emb.shape)
+        # print(mm_emb[sequence].shape)
         seq_emb = t.cat((seq_emb, mm_emb[sequence]), dim=2)
         seq_emb = self.LayerNorm(seq_emb)
         seq_emb = self.dropout(seq_emb)
@@ -263,17 +249,17 @@ class SelfAttentionLayer(nn.Module):
     def __init__(self):
         super(SelfAttentionLayer, self).__init__()
         self.num_attention_heads = args.num_attention_heads
-        self.attention_head_size = int((args.latdim+args.f_new_dim) / args.num_attention_heads)
+        self.attention_head_size = int((args.latdim+args.latdim) / args.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        self.query = nn.Linear(args.latdim+args.f_new_dim, self.all_head_size)
-        self.key = nn.Linear(args.latdim+args.f_new_dim, self.all_head_size)
-        self.value = nn.Linear(args.latdim+args.f_new_dim, self.all_head_size)
+        self.query = nn.Linear(args.latdim+args.latdim, self.all_head_size)
+        self.key = nn.Linear(args.latdim+args.latdim, self.all_head_size)
+        self.value = nn.Linear(args.latdim+args.latdim, self.all_head_size)
 
         self.attn_dropout = nn.Dropout(args.attention_probs_dropout_prob)
 
-        self.dense = nn.Linear(args.latdim+args.f_new_dim, args.latdim+args.f_new_dim)
-        self.LayerNorm = nn.LayerNorm(args.latdim+args.f_new_dim)
+        self.dense = nn.Linear(args.latdim+args.latdim, args.latdim+args.latdim)
+        self.LayerNorm = nn.LayerNorm(args.latdim+args.latdim)
         self.out_dropout = nn.Dropout(args.hidden_dropout_prob)
 
         self.apply(self.init_weights)
@@ -319,11 +305,11 @@ class IntermediateLayer(nn.Module):
     def __init__(self):
         super(IntermediateLayer, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(args.latdim+args.f_new_dim, (args.latdim+args.f_new_dim) * 4, bias=True),
+            nn.Linear(args.latdim+args.latdim, (args.latdim+args.latdim) * 4, bias=True),
             nn.GELU(),
-            nn.Linear((args.latdim+args.f_new_dim) * 4, args.latdim+args.f_new_dim, bias=True),
+            nn.Linear((args.latdim+args.latdim) * 4, args.latdim+args.latdim, bias=True),
             nn.Dropout(args.hidden_dropout_prob),
-            nn.LayerNorm(args.latdim+args.f_new_dim)
+            nn.LayerNorm(args.latdim+args.latdim)
         )
 
     def forward(self, x):
