@@ -43,7 +43,7 @@ class Item_Graph(nn.Module):
     def forward(self):
         item_embs = [self.item_embs]
         for i, gcn in enumerate(self.gcn_layers):
-            item_embs.append(gcn(self.mm_adj, item_embs[-1], self.weights))
+            item_embs.append(gcn(self.mm_adj, item_embs[-1]))
         return sum(item_embs)
 
     def get_knn_adj_mat(self, mm_embedding):
@@ -52,13 +52,14 @@ class Item_Graph(nn.Module):
         #k = 5
         _, knn_ind = t.topk(sim, self.knn_k, dim=-1)
         adj_size = sim.size()
+        del sim
         # construct sparse adj
         indices0 = t.arange(knn_ind.shape[0]).to(self.device)
         indices0 = t.unsqueeze(indices0, 1)
         indices0 = indices0.expand(-1, self.knn_k)
         indices = t.stack((t.flatten(indices0), t.flatten(knn_ind)), 0)
         # norm
-        return indices, self.compute_normalized_laplacian(indices, adj_size), sim
+        return indices, self.compute_normalized_laplacian(indices, adj_size)
     
     def compute_normalized_laplacian(self, indices, adj_size):
         adj = t.sparse.FloatTensor(indices, t.ones_like(indices[0]), adj_size)
@@ -79,8 +80,7 @@ class CustomGCN(nn.Module):
     def __init__(self):
         super(CustomGCN, self).__init__()
 
-    def forward(self, adj, embeds, weights):
-        adj = t.mm(adj, weights)
+    def forward(self, adj, embeds):
         return t.spmm(adj, embeds)
 
 class Encoder(nn.Module):
