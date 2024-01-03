@@ -24,19 +24,19 @@ class Item_Graph(nn.Module):
 
         if self.mode == 'graph_t':
             self.t_feat = handler.t_feat.to(self.device)
-            indices, text_adj, self.weights = self.get_knn_adj_mat(self.t_feat)
+            indices, text_adj= self.get_knn_adj_mat(self.t_feat)
             self.mm_adj = text_adj
         if self.mode == 'graph_v':
             self.v_feat = handler.v_feat.to(self.device)
-            indices, image_adj, self.weights = self.get_knn_adj_mat(self.v_feat)
+            indices, image_adj= self.get_knn_adj_mat(self.v_feat)
             self.mm_adj = image_adj
         if self.mode == 'graph_mm':
             self.t_feat = handler.t_feat.to(self.device)
             self.v_feat = handler.v_feat.to(self.device)
-            indices, text_adj, t_weights = self.get_knn_adj_mat(self.t_feat)
-            indices, image_adj, v_weights = self.get_knn_adj_mat(self.v_feat)
+            indices, text_adj= self.get_knn_adj_mat(self.t_feat)
+            indices, image_adj= self.get_knn_adj_mat(self.v_feat)
             self.mm_adj = self.mm_image_weight * image_adj + (1.0 - self.mm_image_weight) * text_adj
-            self.weights = self.mm_image_weight * v_weights + (1.0 - self.mm_image_weight) * t_weights
+            # self.weights = self.mm_image_weight * v_weights + (1.0 - self.mm_image_weight) * t_weights
         
         self.item_embs = nn.Parameter(init(t.empty(args.item-1, args.latdim)))
 
