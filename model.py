@@ -280,7 +280,7 @@ class RandomMaskSubgraphs(nn.Module):
         newVals = adj._values() * rowNorm * colNorm
         return t.sparse.FloatTensor(adj._indices(), newVals, adj.shape)
 
-    def forward(self, adj, seeds):
+    def forward(self, adj, seeds, prob):
         rows = adj._indices()[0, :]
         cols = adj._indices()[1, :]
 
@@ -301,15 +301,27 @@ class RandomMaskSubgraphs(nn.Module):
                     idct = t.logical_or(idct, t.logical_or(rowIdct, colIdct))
             nxtRows = rows[idct]
             nxtCols = cols[idct]
+            # print(idct)
+            # print(nxtRows)
+            # print(nxtCols)
             masked_rows.extend(nxtRows)
             masked_cols.extend(nxtCols)
             rows = rows[t.logical_not(idct)]
             cols = cols[t.logical_not(idct)]
-            nxtSeeds = nxtRows + nxtCols
+            # nxtSeeds = nxtRows + nxtCols
+            nxtSeeds = t.cat((nxtRows, nxtCols), dim=0)
             if len(nxtSeeds) > 0 and i != args.mask_depth - 1:
-                nxtSeeds = t.unique(nxtSeeds)
-                cand = t.randperm(nxtSeeds.shape[0])
-                nxtSeeds = nxtSeeds[cand[:int(nxtSeeds.shape[0] * args.path_prob ** (i + 1))]] # the dropped edges from P^k
+                nxtSeeds = t.unique(nxtSeeds).cpu()
+                # print("Before dropout ", nxtSeeds, nxtSeeds.shape[0])
+                # cand = t.randperm(nxtSeeds.shape[0])
+                # nxtSeeds = nxtSeeds[cand[:int(nxtSeeds.shape[0] * args.path_prob ** (i + 1))]] # the dropped edges from P^k
+                _nxtSeeds = nxtSeeds - 1
+                # print(_nxtSeeds)
+                _prob = prob[_nxtSeeds]
+                samples = t.multinomial(_prob, num_samples=nxtSeeds.shape[0], replacement=True)
+                nxtSeeds = nxtSeeds[samples]
+                nxtSeeds = t.unique(nxtSeeds).cuda()
+                # print("After dropout ", nxtSeeds, nxtSeeds.shape[0])
 
         masked_rows = t.unsqueeze(t.LongTensor(masked_rows), -1)
         masked_cols = t.unsqueeze(t.LongTensor(masked_cols), -1)

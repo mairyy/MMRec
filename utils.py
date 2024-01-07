@@ -61,3 +61,9 @@ def cross_entropy(seq_out, pos_emb, neg_emb, tar_msk):
         t.log(1 - t.sigmoid(neg_scr) + 1e-24) * tar_msk
     ) / t.sum(tar_msk)
     return loss
+
+def calc_prob(embs):
+    context_norm = embs.div(t.norm(embs, p=2, dim=-1, keepdim=True))
+    cosine_sim = t.mm(context_norm, context_norm.transpose(1, 0))
+    prob = t.sum(cosine_sim, dim=1)
+    return prob

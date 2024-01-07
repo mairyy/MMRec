@@ -1,2 +1,3 @@
-- Original code (id only)
+- Change sample probability from args.path_prob to score of relatedness among items
+- Relatedness scores were calculated by calculating cosin similarity among items. Item embeddings to calculate this score is text/vision/mm embeddings
 - Test with all items

@@ -116,8 +116,15 @@ class Coach:
         for i, batch_data in enumerate(trn_loader):
 
             if i % args.mask_steps == 0:
+                if args.mode_prob == "text":
+                    embs = handler.t_feat
+                if args.mode_prob == "vision":
+                    embs = handler.v_feat
+                if args.mode_prob == "mm":
+                    embs = 0.5 * handler.t_feat + 0.5 * handler.v_feat
+                prob = calc_prob(embs)
                 sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.get_ego_embeds())
-                masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
+                masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates, prob)
 
             batch_data = [i.cuda() for i in batch_data]
             seq, pos, neg = batch_data
