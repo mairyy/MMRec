@@ -283,6 +283,10 @@ class RandomMaskSubgraphs(nn.Module):
     def forward(self, adj, seeds, prob):
         rows = adj._indices()[0, :]
         cols = adj._indices()[1, :]
+        # print(adj, adj.shape)
+        # print('row', rows, rows.shape)
+        # print('cols', cols, cols.shape)
+        # print(seeds, seeds.shape[0])
 
         masked_rows = []
         masked_cols = []
@@ -293,8 +297,10 @@ class RandomMaskSubgraphs(nn.Module):
             nxtSeeds = list()
             idct = None
             for seed in curSeeds:
+                # print(seed)
                 rowIdct = (rows == seed)
                 colIdct = (cols == seed)
+                # print(rowIdct, colIdct)
                 if idct == None:
                     idct = t.logical_or(rowIdct, colIdct)
                 else:
@@ -308,16 +314,20 @@ class RandomMaskSubgraphs(nn.Module):
             masked_cols.extend(nxtCols)
             rows = rows[t.logical_not(idct)]
             cols = cols[t.logical_not(idct)]
-            # nxtSeeds = nxtRows + nxtCols
-            nxtSeeds = t.cat((nxtRows, nxtCols), dim=0)
+            nxtSeeds = nxtRows + nxtCols
+            # print('next seeds', nxtSeeds)
+            # nxtSeeds = t.cat((nxtRows, nxtCols), dim=0)
             if len(nxtSeeds) > 0 and i != args.mask_depth - 1:
                 nxtSeeds = t.unique(nxtSeeds).cpu()
+                mask = t.le(nxtSeeds, args.item-1)
+                nxtSeeds = t.masked_select(nxtSeeds, mask)
                 # print("Before dropout ", nxtSeeds, nxtSeeds.shape[0])
                 # cand = t.randperm(nxtSeeds.shape[0])
                 # nxtSeeds = nxtSeeds[cand[:int(nxtSeeds.shape[0] * args.path_prob ** (i + 1))]] # the dropped edges from P^k
                 _nxtSeeds = nxtSeeds - 1
                 # print(_nxtSeeds)
                 _prob = prob[_nxtSeeds]
+                _prob = t.clamp(_prob, min=0)
                 samples = t.multinomial(_prob, num_samples=nxtSeeds.shape[0], replacement=True)
                 nxtSeeds = nxtSeeds[samples]
                 nxtSeeds = t.unique(nxtSeeds).cuda()
