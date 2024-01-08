@@ -115,38 +115,37 @@ class Coach:
 
         for i, batch_data in enumerate(trn_loader):
 
-            if i % args.mask_steps == 0:
-                sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.get_ego_embeds())
-                masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
-
+            # if i % args.mask_steps == 0:
+            #     sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.get_ego_embeds())
+            #     masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
             batch_data = [i.cuda() for i in batch_data]
             seq, pos, neg = batch_data
 
-            item_emb, item_emb_his = self.encoder(masked_adj)
+            item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
             seq_emb = self.recommender(seq, item_emb)
             tar_msk = pos > 0
             loss_main = cross_entropy(seq_emb, item_emb[pos], item_emb[neg], tar_msk)
 
-            pos = self.sample_pos_edges(masked_edg)
-            neg = self.sample_neg_edges(pos, self.handler.ii_dok)
-            loss_reco = self.decoder(item_emb_his, pos, neg)
+            # pos = self.sample_pos_edges(masked_edg)
+            # neg = self.sample_neg_edges(pos, self.handler.ii_dok)
+            # loss_reco = self.decoder(item_emb_his, pos, neg)
 
-            loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.decoder) + calc_reg_loss(self.recommender)) * args.reg
+            loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.recommender)) * args.reg
 
-            loss = loss_main + loss_reco + loss_regu
+            loss = loss_main + loss_regu
             loss_his.append(loss_main)
 
-            if i % args.mask_steps == 0:
-                reward = calc_reward(loss_his, args.eps)
-                loss_mask = -sample_scr.mean() * reward
-                ep_loss_mask += loss_mask
-                loss_his = loss_his[-1:]
-                loss += loss_mask
+            # if i % args.mask_steps == 0:
+                # reward = calc_reward(loss_his, args.eps)
+                # loss_mask = -sample_scr.mean() * reward
+                # ep_loss_mask += loss_mask
+                # loss_his = loss_his[-1:]
+                # loss += loss_mask
 
             ep_loss += loss.item()
             ep_loss_main += loss_main.item()
-            ep_loss_reco += loss_reco.item()
-            log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f, loss_reco = %.3f        ' % (i, steps, loss, loss_main, loss_regu, loss_reco), save=False, oneline=True)
+            # ep_loss_reco += loss_reco.item()
+            log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f        ' % (i, steps, loss, loss_main, loss_regu), save=False, oneline=True)
             sys.stdout.flush()
 
             self.opt.zero_grad()
@@ -156,7 +155,7 @@ class Coach:
         ret = dict()
         ret['loss'] = ep_loss / steps
         ret['loss_main'] = ep_loss_main / steps
-        ret['loss_reco'] = ep_loss_reco / steps
+        # ret['loss_reco'] = ep_loss_reco / steps
         ret['loss_mask'] = ep_loss_mask / (steps // args.mask_steps)
 
         return ret
