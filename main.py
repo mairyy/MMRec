@@ -105,8 +105,8 @@ class Coach:
         self.encoder.train()
         self.decoder.train()
         self.recommender.train()
-        self.masker.train()
-        self.sampler.train()
+        # self.masker.train()
+        # self.sampler.train()
 
         loss_his = []
         ep_loss, ep_loss_main, ep_loss_reco, ep_loss_mask = 0, 0, 0, 0
@@ -164,8 +164,8 @@ class Coach:
         self.encoder.eval()
         self.decoder.eval()
         self.recommender.eval()
-        self.masker.eval()
-        self.sampler.eval()
+        # self.masker.eval()
+        # self.sampler.eval()
 
         tst_loader = self.handler.tst_loader
         ep_h5, ep_n5, ep_h10, ep_n10, ep_h20, ep_n20, ep_h50, ep_n50  = [0] * 8
