@@ -1,2 +1,3 @@
-- Original code (id only)
+- Remove path masking, decoder
+- Remain encoder (GCN) and recommender (transformer)
 - Test with all items
