@@ -114,6 +114,7 @@ class SASRec(nn.Module):
         self.LayerNorm = nn.LayerNorm(args.latdim)
         self.dropout = nn.Dropout(args.hidden_dropout_prob)
         self.apply(self.init_weights)
+        self.mlp = MLPLayer()
 
     def get_seq_emb(self, sequence, item_emb):
         seq_len = sequence.size(1)
@@ -126,7 +127,9 @@ class SASRec(nn.Module):
         seq_emb = self.dropout(seq_emb)
         return seq_emb
 
-    def forward(self, input_ids, item_emb):
+    def forward(self, input_ids, item_emb, hander):
+        mm_embs = self.mlp(hander.t_feat.cuda())
+        mm_embs = F.pad(mm_embs, (0, 0, 1, 0), mode='constant', value=np.random.uniform(-1, 1))
         attention_mask = (input_ids > 0).long()
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2) # torch.int64
         max_len = attention_mask.size(-1)
@@ -143,7 +146,7 @@ class SASRec(nn.Module):
 
         seq_embs = [self.get_seq_emb(input_ids, item_emb)]
         for trm in self.layers:
-            seq_embs.append(trm(seq_embs[-1], extended_attention_mask))
+            seq_embs.append(trm(seq_embs[-1], extended_attention_mask, mm_embs))
         seq_emb = sum(seq_embs)
 
         return seq_emb
@@ -154,14 +157,24 @@ class SASRec(nn.Module):
             if module.bias is not None:
                 module.bias.data.zero_()
 
+class MLPLayer(nn.Module):
+    def __init__(self):
+        super(MLPLayer, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(512, 256, bias=True),
+            nn.Linear(256, args.latdim, bias=True)
+        )
+    def forward(self, embs):
+        return self.layers(embs)
+
 class TransformerLayer(nn.Module):
     def __init__(self):
         super(TransformerLayer, self).__init__()
         self.attention = SelfAttentionLayer()
         self.intermediate = IntermediateLayer()
 
-    def forward(self, hidden_states, attention_mask):
-        attention_output = self.attention(hidden_states, attention_mask)
+    def forward(self, hidden_states, attention_mask, mm_embs):
+        attention_output = self.attention(hidden_states, attention_mask, mm_embs)
         intermediate_output = self.intermediate(attention_output)
         return intermediate_output
 
@@ -189,9 +202,9 @@ class SelfAttentionLayer(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(self, input_tensor, attention_mask):
-        mixed_query_layer = self.query(input_tensor)
-        mixed_key_layer = self.key(input_tensor)
+    def forward(self, input_tensor, attention_mask, mm_embs):
+        mixed_query_layer = self.query(mm_embs)
+        mixed_key_layer = self.key(mm_embs)
         mixed_value_layer = self.value(input_tensor)
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
