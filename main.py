@@ -183,7 +183,7 @@ class Coach:
                 item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
                 seq_emb = self.recommender(seq, item_emb)
                 seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)
-                all_ids = t.arange(item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda() # (batch, 100)
+                all_ids = t.arange(1, item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda() # (batch, 100)
                 all_emb = item_emb[all_ids] # (batch, 100, latdim)
                 all_scr = t.sum(t.unsqueeze(seq_emb, 1) * all_emb, -1) # (batch, 100)
                 seq_len = (seq > 0).cpu().numpy().sum(-1)
