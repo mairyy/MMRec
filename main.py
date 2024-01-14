@@ -67,13 +67,12 @@ class Coach:
 
     def prepare_model(self):
         self.encoder = Encoder().cuda()
-        self.decoder = Decoder().cuda()
+        # self.decoder = Decoder().cuda()
         self.recommender = SASRec().cuda()
-        self.masker = RandomMaskSubgraphs()
-        self.sampler = LocalGraph()
+        # self.masker = RandomMaskSubgraphs()
+        # self.sampler = LocalGraph()
         self.opt = t.optim.Adam(
             [{"params": self.encoder.parameters()},
-             {"params": self.decoder.parameters()},
              {"params": self.recommender.parameters()}],
             lr=args.lr, weight_decay=0
         )
@@ -103,7 +102,7 @@ class Coach:
 
     def train_epoch(self):
         self.encoder.train()
-        self.decoder.train()
+        # self.decoder.train()
         self.recommender.train()
         # self.masker.train()
         # self.sampler.train()
@@ -162,7 +161,7 @@ class Coach:
 
     def test_epoch(self, logPredict=False):
         self.encoder.eval()
-        self.decoder.eval()
+        # self.decoder.eval()
         self.recommender.eval()
         # self.masker.eval()
         # self.sampler.eval()
@@ -293,7 +292,6 @@ class Coach:
 
         content = {
             'encoder': self.encoder,
-            'decoder': self.decoder,
             'recommender': self.recommender,
         }
         t.save(content, './Models/' + args.save_path + '.mod')
@@ -303,11 +301,10 @@ class Coach:
     def load_model(self):
         ckp = t.load('./Models/' + args.load_model + '.mod')
         self.encoder = ckp['encoder']
-        self.decoder= ckp['decoder']
+        # self.decoder= ckp['decoder']
         self.recommender = ckp['recommender']
         self.opt = t.optim.Adam(
             [{"params": self.encoder.parameters()},
-             {"params": self.decoder.parameters()},
              {"params": self.recommender.parameters()}],
             lr=args.lr, weight_decay=0
         )
