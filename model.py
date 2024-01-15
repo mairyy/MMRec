@@ -154,14 +154,18 @@ class SASRec(nn.Module):
         #reduce feature's dim
         if args.mode == 'text':
             t_feat = handler.t_feat.to(self.device)
+            t_feat = F.pad(t_feat, (0, 0, 1, 0), mode='constant', value=np.random.randn())
             # print(t_feat.shape[0], self.linear)
             self.item_feat = self.linear(t_feat)
         if args.mode == 'vision':
             v_feat = self.linear(handler.v_feat.to(self.device))
+            v_feat = F.pad(v_feat, (0, 0, 1, 0), mode='constant', value=np.random.randn())
             self.item_feat = v_feat
         if args.mode == 'mm':
             t_feat = handler.t_feat.to(self.device)
             v_feat = handler.v_feat.to(self.device)
+            t_feat = F.pad(t_feat, (0, 0, 1, 0), mode='constant', value=np.random.randn())
+            v_feat = F.pad(v_feat, (0, 0, 1, 0), mode='constant', value=np.random.randn())
             self.item_feat = self.linear(t.cat((t_feat, v_feat), dim=1))
         # print(item_feat, item_feat.shape)
         self.LayerNorm(self.item_feat)

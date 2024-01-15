@@ -67,13 +67,12 @@ class Coach:
 
     def prepare_model(self):
         self.encoder = Encoder().cuda()
-        self.decoder = Decoder().cuda()
+        # self.decoder = Decoder().cuda()
         self.recommender = SASRec().cuda()
-        self.masker = RandomMaskSubgraphs()
-        self.sampler = LocalGraph()
+        # self.masker = RandomMaskSubgraphs()
+        # self.sampler = LocalGraph()
         self.opt = t.optim.Adam(
             [{"params": self.encoder.parameters()},
-             {"params": self.decoder.parameters()},
              {"params": self.recommender.parameters()}],
             lr=args.lr, weight_decay=0
         )
@@ -103,10 +102,10 @@ class Coach:
 
     def train_epoch(self):
         self.encoder.train()
-        self.decoder.train()
+        # self.decoder.train()
         self.recommender.train()
-        self.masker.train()
-        self.sampler.train()
+        # self.masker.train()
+        # self.sampler.train()
 
         loss_his = []
         ep_loss, ep_loss_main, ep_loss_reco, ep_loss_mask = 0, 0, 0, 0
@@ -115,39 +114,39 @@ class Coach:
 
         for i, batch_data in enumerate(trn_loader):
 
-            if i % args.mask_steps == 0:
-                sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.get_ego_embeds())
-                masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
+            # if i % args.mask_steps == 0:
+            #     sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.get_ego_embeds())
+            #     masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
 
             batch_data = [i.cuda() for i in batch_data]
             seq, pos, neg = batch_data
 
-            item_emb, item_emb_his = self.encoder(masked_adj)
+            item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
             seq_emb = self.recommender(seq, item_emb, handler)
             tar_msk = pos > 0
             item_emb = t.cat((item_emb, self.recommender.item_feat), dim=1)
             loss_main = cross_entropy(seq_emb, item_emb[pos], item_emb[neg], tar_msk)
 
-            pos = self.sample_pos_edges(masked_edg)
-            neg = self.sample_neg_edges(pos, self.handler.ii_dok)
-            loss_reco = self.decoder(item_emb_his, pos, neg)
+            # pos = self.sample_pos_edges(masked_edg)
+            # neg = self.sample_neg_edges(pos, self.handler.ii_dok)
+            # loss_reco = self.decoder(item_emb_his, pos, neg)
 
-            loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.decoder) + calc_reg_loss(self.recommender)) * args.reg
+            loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.recommender)) * args.reg
 
-            loss = loss_main + loss_reco + loss_regu
+            loss = loss_main + loss_regu
             loss_his.append(loss_main)
 
-            if i % args.mask_steps == 0:
-                reward = calc_reward(loss_his, args.eps)
-                loss_mask = -sample_scr.mean() * reward
-                ep_loss_mask += loss_mask
-                loss_his = loss_his[-1:]
-                loss += loss_mask
+            # if i % args.mask_steps == 0:
+            #     reward = calc_reward(loss_his, args.eps)
+            #     loss_mask = -sample_scr.mean() * reward
+            #     ep_loss_mask += loss_mask
+            #     loss_his = loss_his[-1:]
+            #     loss += loss_mask
 
             ep_loss += loss.item()
             ep_loss_main += loss_main.item()
-            ep_loss_reco += loss_reco.item()
-            log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f, loss_reco = %.3f        ' % (i, steps, loss, loss_main, loss_regu, loss_reco), save=False, oneline=True)
+            # ep_loss_reco += loss_reco.item()
+            log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f        ' % (i, steps, loss, loss_main, loss_regu), save=False, oneline=True)
             sys.stdout.flush()
 
             self.opt.zero_grad()
@@ -157,17 +156,17 @@ class Coach:
         ret = dict()
         ret['loss'] = ep_loss / steps
         ret['loss_main'] = ep_loss_main / steps
-        ret['loss_reco'] = ep_loss_reco / steps
+        # ret['loss_reco'] = ep_loss_reco / steps
         ret['loss_mask'] = ep_loss_mask / (steps // args.mask_steps)
 
         return ret
 
     def test_epoch(self, logPredict=False):
         self.encoder.eval()
-        self.decoder.eval()
+        # self.decoder.eval()
         self.recommender.eval()
-        self.masker.eval()
-        self.sampler.eval()
+        # self.masker.eval()
+        # self.sampler.eval()
 
         tst_loader = self.handler.tst_loader
         ep_h5, ep_n5, ep_h10, ep_n10, ep_h20, ep_n20, ep_h50, ep_n50  = [0] * 8
@@ -185,7 +184,7 @@ class Coach:
                 seq_emb = self.recommender(seq, item_emb, handler)
                 seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)
                 # print(seq_emb.shape)
-                all_ids = t.arange(item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda() # (batch, 100)
+                all_ids = t.arange(1, item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda() # (batch, 100)
                 # print("1", item_emb.shape)
                 # print("2", self.recommender.item_feat.shape)
                 all_emb = t.cat((item_emb, self.recommender.item_feat), dim=1)
@@ -302,7 +301,6 @@ class Coach:
 
         content = {
             'encoder': self.encoder,
-            'decoder': self.decoder,
             'recommender': self.recommender,
         }
         t.save(content, './Models/' + args.save_path + '.mod')
@@ -312,11 +310,10 @@ class Coach:
     def load_model(self):
         ckp = t.load('./Models/' + args.load_model + '.mod')
         self.encoder = ckp['encoder']
-        self.decoder= ckp['decoder']
+        # self.decoder= ckp['decoder']
         self.recommender = ckp['recommender']
         self.opt = t.optim.Adam(
             [{"params": self.encoder.parameters()},
-             {"params": self.decoder.parameters()},
              {"params": self.recommender.parameters()}],
             lr=args.lr, weight_decay=0
         )
