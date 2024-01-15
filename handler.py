@@ -22,6 +22,18 @@ class DataHandler:
         self.seq_file = predir + 'seq'
         self.tst_file = predir + 'tst'
         self.neg_file = predir + 'neg'
+        self.text_file = predir + 'text'
+
+    def load_emb(self, filename):
+        with open(filename, 'rb') as file:
+            # Sử dụng pickle để đọc dữ liệu từ file nhị phân
+            matrix = pickle.load(file)
+        # Tạo một dòng mới toàn giá trị 0
+        new_row = np.zeros((1, binary_matrix.shape[1]))
+        # Thêm dòng mới vào đầu ma trận
+        matrix = np.vstack([new_row, binary_matrix])
+        return matrix
+
 
     def load_adj(self, filename):
         with open(filename, 'rb') as fs:
@@ -62,6 +74,7 @@ class DataHandler:
         tst = self.load_seq(self.tst_file)
         seq = self.load_seq(self.seq_file)
         neg = self.load_seq(self.neg_file)
+        text_emb = self.load_emb(self.text_file)
         neg = np.array(neg)
         args.user, args.item = len(seq), trn.shape[0]
         self.ii_dok = trn.todok()

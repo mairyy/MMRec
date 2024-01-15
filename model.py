@@ -31,73 +31,73 @@ class Encoder(nn.Module):
             embeds.append(gcn(encoder_adj, embeds[-1]))
         return sum(embeds), embeds
 
-class TrivialDecoder(nn.Module):
-    def __init__(self):
-        super(TrivialDecoder, self).__init__()
-        self.MLP = nn.Sequential(
-            nn.Linear(args.latdim * 3, args.latdim, bias=True),
-            nn.ReLU(),
-            nn.Linear(args.latdim, 1, bias=True),
-            nn.Sigmoid()
-        )
-        self.apply(self.init_weights)
+# class TrivialDecoder(nn.Module):
+#     def __init__(self):
+#         super(TrivialDecoder, self).__init__()
+#         self.MLP = nn.Sequential(
+#             nn.Linear(args.latdim * 3, args.latdim, bias=True),
+#             nn.ReLU(),
+#             nn.Linear(args.latdim, 1, bias=True),
+#             nn.Sigmoid()
+#         )
+#         self.apply(self.init_weights)
 
-    def forward(self, embeds, pos, neg):
-        # pos: (batch, 2), neg: (batch, num_reco_neg, 2)
-        pos_emb, neg_emb = [], []
-        pos_emb.append(embeds[-1][pos[:,0]])
-        pos_emb.append(embeds[-1][pos[:,1]])
-        pos_emb.append(embeds[-1][pos[:,0]] * embeds[-1][pos[:,1]])
-        neg_emb.append(embeds[-1][neg[:,:,0]])
-        neg_emb.append(embeds[-1][neg[:,:,1]])
-        neg_emb.append(embeds[-1][neg[:,:,0]] * embeds[-1][neg[:,:,1]])
-        pos_emb = t.cat(pos_emb, -1) # (n, latdim * 3)
-        neg_emb = t.cat(neg_emb, -1) # (n, num_reco_neg, latdim * 3)
-        pos_scr = t.exp(t.squeeze(self.MLP(pos_emb))) # (n)
-        neg_scr = t.exp(t.squeeze(self.MLP(neg_emb))) # (n, num_reco_neg)
-        neg_scr = t.sum(neg_scr, -1) + pos_scr
-        loss = -t.sum(pos_scr / (neg_scr + 1e-8) + 1e-8)
-        return loss
+#     def forward(self, embeds, pos, neg):
+#         # pos: (batch, 2), neg: (batch, num_reco_neg, 2)
+#         pos_emb, neg_emb = [], []
+#         pos_emb.append(embeds[-1][pos[:,0]])
+#         pos_emb.append(embeds[-1][pos[:,1]])
+#         pos_emb.append(embeds[-1][pos[:,0]] * embeds[-1][pos[:,1]])
+#         neg_emb.append(embeds[-1][neg[:,:,0]])
+#         neg_emb.append(embeds[-1][neg[:,:,1]])
+#         neg_emb.append(embeds[-1][neg[:,:,0]] * embeds[-1][neg[:,:,1]])
+#         pos_emb = t.cat(pos_emb, -1) # (n, latdim * 3)
+#         neg_emb = t.cat(neg_emb, -1) # (n, num_reco_neg, latdim * 3)
+#         pos_scr = t.exp(t.squeeze(self.MLP(pos_emb))) # (n)
+#         neg_scr = t.exp(t.squeeze(self.MLP(neg_emb))) # (n, num_reco_neg)
+#         neg_scr = t.sum(neg_scr, -1) + pos_scr
+#         loss = -t.sum(pos_scr / (neg_scr + 1e-8) + 1e-8)
+#         return loss
 
-    def init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            init(module.weight)
-            if module.bias is not None:
-                module.bias.data.zero_()
+#     def init_weights(self, module):
+#         if isinstance(module, nn.Linear):
+#             init(module.weight)
+#             if module.bias is not None:
+#                 module.bias.data.zero_()
 
-class Decoder(nn.Module):
-    def __init__(self):
-        super(Decoder, self).__init__()
-        self.MLP = nn.Sequential(
-            nn.Linear(args.latdim * args.num_gcn_layers ** 2, args.latdim * args.num_gcn_layers, bias=True),
-            nn.ReLU(),
-            nn.Linear(args.latdim * args.num_gcn_layers, args.latdim, bias=True),
-            nn.ReLU(),
-            nn.Linear(args.latdim, 1, bias=True),
-            nn.Sigmoid()
-        )
-        self.apply(self.init_weights)
+# class Decoder(nn.Module):
+#     def __init__(self):
+#         super(Decoder, self).__init__()
+#         self.MLP = nn.Sequential(
+#             nn.Linear(args.latdim * args.num_gcn_layers ** 2, args.latdim * args.num_gcn_layers, bias=True),
+#             nn.ReLU(),
+#             nn.Linear(args.latdim * args.num_gcn_layers, args.latdim, bias=True),
+#             nn.ReLU(),
+#             nn.Linear(args.latdim, 1, bias=True),
+#             nn.Sigmoid()
+#         )
+#         self.apply(self.init_weights)
 
-    def forward(self, embeds, pos, neg):
-        # pos: (batch, 2), neg: (batch, num_reco_neg, 2)
-        pos_emb, neg_emb = [], []
-        for i in range(args.num_gcn_layers):
-            for j in range(args.num_gcn_layers):
-                pos_emb.append(embeds[i][pos[:,0]] * embeds[j][pos[:,1]])
-                neg_emb.append(embeds[i][neg[:,:,0]] * embeds[j][neg[:,:,1]])
-        pos_emb = t.cat(pos_emb, -1) # (n, latdim * num_gcn_layers ** 2)
-        neg_emb = t.cat(neg_emb, -1) # (n, num_reco_neg, latdim * num_gcn_layers ** 2)
-        pos_scr = t.exp(t.squeeze(self.MLP(pos_emb))) # (n)
-        neg_scr = t.exp(t.squeeze(self.MLP(neg_emb))) # (n, num_reco_neg)
-        neg_scr = t.sum(neg_scr, -1) + pos_scr
-        loss = -t.sum(pos_scr / (neg_scr + 1e-8) + 1e-8)
-        return loss
+#     def forward(self, embeds, pos, neg):
+#         # pos: (batch, 2), neg: (batch, num_reco_neg, 2)
+#         pos_emb, neg_emb = [], []
+#         for i in range(args.num_gcn_layers):
+#             for j in range(args.num_gcn_layers):
+#                 pos_emb.append(embeds[i][pos[:,0]] * embeds[j][pos[:,1]])
+#                 neg_emb.append(embeds[i][neg[:,:,0]] * embeds[j][neg[:,:,1]])
+#         pos_emb = t.cat(pos_emb, -1) # (n, latdim * num_gcn_layers ** 2)
+#         neg_emb = t.cat(neg_emb, -1) # (n, num_reco_neg, latdim * num_gcn_layers ** 2)
+#         pos_scr = t.exp(t.squeeze(self.MLP(pos_emb))) # (n)
+#         neg_scr = t.exp(t.squeeze(self.MLP(neg_emb))) # (n, num_reco_neg)
+#         neg_scr = t.sum(neg_scr, -1) + pos_scr
+#         loss = -t.sum(pos_scr / (neg_scr + 1e-8) + 1e-8)
+#         return loss
 
-    def init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            init(module.weight)
-            if module.bias is not None:
-                module.bias.data.zero_()
+#     def init_weights(self, module):
+#         if isinstance(module, nn.Linear):
+#             init(module.weight)
+#             if module.bias is not None:
+#                 module.bias.data.zero_()
 
 class GCNLayer(nn.Module):
     def __init__(self):
@@ -235,85 +235,85 @@ class IntermediateLayer(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-class LocalGraph(nn.Module):
-    def __init__(self):
-        super(LocalGraph, self).__init__()
+# class LocalGraph(nn.Module):
+#     def __init__(self):
+#         super(LocalGraph, self).__init__()
 
-    def make_noise(self, scores):
-        noise = t.rand(scores.shape).cuda()
-        noise = -t.log(-t.log(noise))
-        return scores + noise
+#     def make_noise(self, scores):
+#         noise = t.rand(scores.shape).cuda()
+#         noise = -t.log(-t.log(noise))
+#         return scores + noise
 
-    def forward(self, adj, embeds, foo=None):
-        order = t.sparse.sum(adj, dim=-1).to_dense().view([-1, 1])
-        fstEmbeds = t.spmm(adj, embeds) - embeds
-        fstNum = order
+#     def forward(self, adj, embeds, foo=None):
+#         order = t.sparse.sum(adj, dim=-1).to_dense().view([-1, 1])
+#         fstEmbeds = t.spmm(adj, embeds) - embeds
+#         fstNum = order
 
-        emb = [fstEmbeds]
-        num = [fstNum]
+#         emb = [fstEmbeds]
+#         num = [fstNum]
 
-        for i in range(args.mask_depth):
-            adj = sparse_dropout(adj, args.path_prob ** (i + 1))
-            emb.append((t.spmm(adj, emb[-1]) - emb[-1]) - order * emb[-1])
-            num.append((t.spmm(adj, num[-1]) - num[-1]) - order)
-            order = t.sparse.sum(adj, dim=-1).to_dense().view([-1, 1])
+#         for i in range(args.mask_depth):
+#             adj = sparse_dropout(adj, args.path_prob ** (i + 1))
+#             emb.append((t.spmm(adj, emb[-1]) - emb[-1]) - order * emb[-1])
+#             num.append((t.spmm(adj, num[-1]) - num[-1]) - order)
+#             order = t.sparse.sum(adj, dim=-1).to_dense().view([-1, 1])
 
-        subgraphEmbeds = sum(emb) / (sum(num) + 1e-8)
-        subgraphEmbeds = F.normalize(subgraphEmbeds, p=2)
+#         subgraphEmbeds = sum(emb) / (sum(num) + 1e-8)
+#         subgraphEmbeds = F.normalize(subgraphEmbeds, p=2)
 
-        embeds = F.normalize(embeds, p=2)
-        scores = t.sum(subgraphEmbeds * embeds, dim=-1)
-        scores = self.make_noise(scores)
+#         embeds = F.normalize(embeds, p=2)
+#         scores = t.sum(subgraphEmbeds * embeds, dim=-1)
+#         scores = self.make_noise(scores)
 
-        _, candidates = t.topk(scores, args.num_mask_cand)
+#         _, candidates = t.topk(scores, args.num_mask_cand)
 
-        return scores, candidates
+#         return scores, candidates
 
-class RandomMaskSubgraphs(nn.Module):
-    def __init__(self):
-        super(RandomMaskSubgraphs, self).__init__()
+# class RandomMaskSubgraphs(nn.Module):
+#     def __init__(self):
+#         super(RandomMaskSubgraphs, self).__init__()
 
-    def normalize(self, adj):
-        degree = t.pow(t.sparse.sum(adj, dim=1).to_dense() + 1e-12, -0.5)
-        newRows, newCols = adj._indices()[0, :], adj._indices()[1, :]
-        rowNorm, colNorm = degree[newRows], degree[newCols]
-        newVals = adj._values() * rowNorm * colNorm
-        return t.sparse.FloatTensor(adj._indices(), newVals, adj.shape)
+#     def normalize(self, adj):
+#         degree = t.pow(t.sparse.sum(adj, dim=1).to_dense() + 1e-12, -0.5)
+#         newRows, newCols = adj._indices()[0, :], adj._indices()[1, :]
+#         rowNorm, colNorm = degree[newRows], degree[newCols]
+#         newVals = adj._values() * rowNorm * colNorm
+#         return t.sparse.FloatTensor(adj._indices(), newVals, adj.shape)
 
-    def forward(self, adj, seeds):
-        rows = adj._indices()[0, :]
-        cols = adj._indices()[1, :]
+#     def forward(self, adj, seeds):
+#         rows = adj._indices()[0, :]
+#         cols = adj._indices()[1, :]
 
-        masked_rows = []
-        masked_cols = []
-        masked_idct = []
+#         masked_rows = []
+#         masked_cols = []
+#         masked_idct = []
 
-        for i in range(args.mask_depth):
-            curSeeds = seeds if i == 0 else nxtSeeds
-            nxtSeeds = list()
-            idct = None
-            for seed in curSeeds:
-                rowIdct = (rows == seed)
-                colIdct = (cols == seed)
-                if idct == None:
-                    idct = t.logical_or(rowIdct, colIdct)
-                else:
-                    idct = t.logical_or(idct, t.logical_or(rowIdct, colIdct))
-            nxtRows = rows[idct]
-            nxtCols = cols[idct]
-            masked_rows.extend(nxtRows)
-            masked_cols.extend(nxtCols)
-            rows = rows[t.logical_not(idct)]
-            cols = cols[t.logical_not(idct)]
-            nxtSeeds = nxtRows + nxtCols
-            if len(nxtSeeds) > 0 and i != args.mask_depth - 1:
-                nxtSeeds = t.unique(nxtSeeds)
-                cand = t.randperm(nxtSeeds.shape[0])
-                nxtSeeds = nxtSeeds[cand[:int(nxtSeeds.shape[0] * args.path_prob ** (i + 1))]] # the dropped edges from P^k
+#         for i in range(args.mask_depth):
+#             curSeeds = seeds if i == 0 else nxtSeeds
+#             nxtSeeds = list()
+#             idct = None
+#             for seed in curSeeds:
+#                 rowIdct = (rows == seed)
+#                 colIdct = (cols == seed)
+#                 if idct == None:
+#                     idct = t.logical_or(rowIdct, colIdct)
+#                 else:
+#                     idct = t.logical_or(idct, t.logical_or(rowIdct, colIdct))
+#             nxtRows = rows[idct]
+#             nxtCols = cols[idct]
+#             masked_rows.extend(nxtRows)
+#             masked_cols.extend(nxtCols)
+#             rows = rows[t.logical_not(idct)]
+#             cols = cols[t.logical_not(idct)]
+#             nxtSeeds = nxtRows + nxtCols
+#             if len(nxtSeeds) > 0 and i != args.mask_depth - 1:
+#                 nxtSeeds = t.unique(nxtSeeds)
+#                 cand = t.randperm(nxtSeeds.shape[0])
+#                 nxtSeeds = nxtSeeds[cand[:int(nxtSeeds.shape[0] * args.path_prob ** (i + 1))]] # the dropped edges from P^k
 
-        masked_rows = t.unsqueeze(t.LongTensor(masked_rows), -1)
-        masked_cols = t.unsqueeze(t.LongTensor(masked_cols), -1)
-        masked_edge = t.hstack([masked_rows, masked_cols])
-        encoder_adj = self.normalize(t.sparse.FloatTensor(t.stack([rows, cols], dim=0), t.ones_like(rows).cuda(), adj.shape))
+#         masked_rows = t.unsqueeze(t.LongTensor(masked_rows), -1)
+#         masked_cols = t.unsqueeze(t.LongTensor(masked_cols), -1)
+#         masked_edge = t.hstack([masked_rows, masked_cols])
+#         encoder_adj = self.normalize(t.sparse.FloatTensor(t.stack([rows, cols], dim=0), t.ones_like(rows).cuda(), adj.shape))
 
-        return encoder_adj, masked_edge
+#         return encoder_adj, masked_edge

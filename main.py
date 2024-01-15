@@ -67,86 +67,41 @@ class Coach:
 
     def prepare_model(self):
         self.encoder = Encoder().cuda()
-        self.decoder = Decoder().cuda()
         self.recommender = SASRec().cuda()
-        self.masker = RandomMaskSubgraphs()
-        self.sampler = LocalGraph()
         self.opt = t.optim.Adam(
             [{"params": self.encoder.parameters()},
-             {"params": self.decoder.parameters()},
              {"params": self.recommender.parameters()}],
             lr=args.lr, weight_decay=0
         )
 
-    def sample_pos_edges(self, masked_edges):
-        return masked_edges[t.randperm(masked_edges.shape[0])[:args.con_batch]]
-
-    def sample_neg_edges(self, pos, dok):
-        neg = []
-        for u, v in pos:
-            cu_neg = []
-            num_samp = args.num_reco_neg // 2
-            for i in range(num_samp):
-                while True:
-                    v_neg = np.random.randint(1, args.item)
-                    if (u, v_neg) not in dok:
-                        break
-                cu_neg.append([u, v_neg])
-            for i in range(num_samp):
-                while True:
-                    u_neg = np.random.randint(1, args.item)
-                    if (u_neg, v) not in dok:
-                        break
-                cu_neg.append([u_neg, v])
-            neg.append(cu_neg)
-        return t.Tensor(neg).long()
 
     def train_epoch(self):
-        self.encoder.train()
-        self.decoder.train()
+        # self.encoder.train()
         self.recommender.train()
-        self.masker.train()
-        self.sampler.train()
 
         loss_his = []
-        ep_loss, ep_loss_main, ep_loss_reco, ep_loss_mask = 0, 0, 0, 0
+        ep_loss, ep_loss_main = 0, 0, 
         trn_loader = self.handler.trn_loader
         steps = trn_loader.dataset.__len__() // args.trn_batch
 
         for i, batch_data in enumerate(trn_loader):
 
-            if i % args.mask_steps == 0:
-                sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.get_ego_embeds())
-                masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
-
             batch_data = [i.cuda() for i in batch_data]
             seq, pos, neg = batch_data
 
-            item_emb, item_emb_his = self.encoder(masked_adj)
+            item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
             seq_emb = self.recommender(seq, item_emb)
             tar_msk = pos > 0
             loss_main = cross_entropy(seq_emb, item_emb[pos], item_emb[neg], tar_msk)
 
-            pos = self.sample_pos_edges(masked_edg)
-            neg = self.sample_neg_edges(pos, self.handler.ii_dok)
-            loss_reco = self.decoder(item_emb_his, pos, neg)
+            loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.recommender)) * args.reg
 
-            loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.decoder) + calc_reg_loss(self.recommender)) * args.reg
-
-            loss = loss_main + loss_reco + loss_regu
+            loss = loss_main + loss_regu
             loss_his.append(loss_main)
-
-            if i % args.mask_steps == 0:
-                reward = calc_reward(loss_his, args.eps)
-                loss_mask = -sample_scr.mean() * reward
-                ep_loss_mask += loss_mask
-                loss_his = loss_his[-1:]
-                loss += loss_mask
 
             ep_loss += loss.item()
             ep_loss_main += loss_main.item()
-            ep_loss_reco += loss_reco.item()
-            log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f, loss_reco = %.3f        ' % (i, steps, loss, loss_main, loss_regu, loss_reco), save=False, oneline=True)
+            log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f' % (i, steps, loss, loss_main, loss_regu), save=False, oneline=True)
             sys.stdout.flush()
 
             self.opt.zero_grad()
@@ -156,18 +111,12 @@ class Coach:
         ret = dict()
         ret['loss'] = ep_loss / steps
         ret['loss_main'] = ep_loss_main / steps
-        ret['loss_reco'] = ep_loss_reco / steps
-        ret['loss_mask'] = ep_loss_mask / (steps // args.mask_steps)
 
         return ret
 
     def test_epoch(self, logPredict=False):
         self.encoder.eval()
-        self.decoder.eval()
         self.recommender.eval()
-        self.masker.eval()
-        self.sampler.eval()
-
         tst_loader = self.handler.tst_loader
         ep_h5, ep_n5, ep_h10, ep_n10, ep_h20, ep_n20, ep_h50, ep_n50  = [0] * 8
         group_h20 = [0] * 4
@@ -175,12 +124,13 @@ class Coach:
         group_num = [0] * 4
         num = tst_loader.dataset.__len__()
         steps = num // args.tst_batch
+        item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
+
 
         with t.no_grad():
             for i, batch_data in enumerate(tst_loader):
                 batch_data = [i.cuda() for i in batch_data]
                 seq, pos, neg = batch_data
-                item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
                 seq_emb = self.recommender(seq, item_emb)
                 seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)
                 all_ids = t.arange(1, item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda() # (batch, 100)
@@ -294,7 +244,6 @@ class Coach:
 
         content = {
             'encoder': self.encoder,
-            'decoder': self.decoder,
             'recommender': self.recommender,
         }
         t.save(content, './Models/' + args.save_path + '.mod')
@@ -304,11 +253,9 @@ class Coach:
     def load_model(self):
         ckp = t.load('./Models/' + args.load_model + '.mod')
         self.encoder = ckp['encoder']
-        self.decoder= ckp['decoder']
         self.recommender = ckp['recommender']
         self.opt = t.optim.Adam(
             [{"params": self.encoder.parameters()},
-             {"params": self.decoder.parameters()},
              {"params": self.recommender.parameters()}],
             lr=args.lr, weight_decay=0
         )
