@@ -1,3 +1,2 @@
-- Remove path masking, decoder
-- Remain encoder (GCN) and recommender (transformer)
+- MELT
 - Test with all items

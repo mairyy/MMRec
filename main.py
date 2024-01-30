@@ -1,333 +1,229 @@
-import logger as logger
-from params import args
-from logger import log
-from handler import *
-from model import *
-from utils import *
-import numpy as np
-import torch as t
-import pickle
-import sys
 import os
-import csv
+import torch
+import numpy as np
+from params import parse_args
+import torch.utils.data as data_utils
+from embedder import embedder
+from utils import setupt_logger, set_random_seeds, Checker
+from sampler import NegativeSampler
+from data import ValidData, TestData, TrainData
+from models import MELT, SASRec
 
-t.manual_seed(args.seed)
-np.random.seed(args.seed)
+class Trainer(embedder):
+    def __init__(self, args):
+        self.logger = setupt_logger(args, f'log/{args.model}/{args.dataset}', name = args.model, filename = "log.txt")
+        embedder.__init__(self, args, self.logger)
+        self.device = f'cuda:{args.gpu}' if torch.cuda.is_available() else "cpu"
+        self.args = args
+        torch.cuda.set_device(self.device)
+        self.split_head_tail()
+        self.save_user_item_context()
+        
+    def train(self):
+        set_random_seeds(self.args.seed)
+        u_L_max = self.args.maxlen
+        i_L_max = self.item_threshold + 50
+        self.sasrec = SASRec(self.args, self.item_num).to(self.device)
+        self.melt = MELT(self.args, self.logger, self.train_data, self.device, self.item_num, u_L_max, i_L_max).to(self.device)
+        self.inference_negative_sampler = NegativeSampler(self.args, self.dataset)
+        
+        # Build the train, valid, test loader
+        train_dataset = TrainData(self.train_data, self.user_num, self.item_num, batch_size=self.args.batch_size, maxlen=self.args.maxlen)
+        train_loader = data_utils.DataLoader(train_dataset, batch_size=self.args.batch_size, shuffle=True, drop_last=False)
+        valid_dataset = ValidData(self.args, self.item_context, self.train_data, self.test_data, self.valid_data, self.inference_negative_sampler)
+        self.valid_loader = data_utils.DataLoader(valid_dataset, batch_size=self.args.batch_size, shuffle=True, drop_last=False)
+        test_dataset = TestData(self.args, self.item_context, self.train_data, self.test_data, self.valid_data, self.inference_negative_sampler)
+        self.test_loader = data_utils.DataLoader(test_dataset, batch_size=self.args.batch_size, shuffle=True, drop_last=False)
+        
+        # For selecting the best model
+        self.validcheck = Checker(self.logger)
 
-class Coach:
-    def __init__(self, handler):
-        self.handler = handler
+        adam_optimizer = torch.optim.Adam([{"params": self.melt.parameters()}, {"params": self.sasrec.parameters()}], lr=self.args.lr, betas=(0.9, 0.98))
+        
+        i_tail_set = data_utils.TensorDataset(torch.LongTensor(list(self.i_tail_set)))
+        
+        # For updating the tail item embedding
+        i_tail_loader = data_utils.DataLoader(i_tail_set, self.args.batch_size * 2, shuffle=False, drop_last=False) # No matter how batch size is
+        
+        # DataLoader for bilateral branches
+        i_batch_size = len(self.i_head_set) // (len(train_loader)-1) + 1
+        i_h_loader = data_utils.DataLoader(self.i_head_set, i_batch_size, shuffle=True, drop_last=False)
+        u_batch_size = len(self.u_head_set) // (len(train_loader)-1) + 1
+        u_h_loader = data_utils.DataLoader(self.u_head_set, u_batch_size, shuffle=True, drop_last=False)
+        
+        for epoch in range(self.args.e_max):
+            self.sasrec.train()
+            training_loss = 0.0
+            self.melt.eval()
+            
+            with torch.no_grad():
+                # Knowledge transfer from item branch to user branch
+                self.sasrec.update_tail_item_representation(i_tail_loader, self.item_context, self.melt.item_branch.W_I) 
+                #i_tail_loader, item_context, W_I
+                
+            self.melt.train()
+            for _, ((u,seq,pos,neg),(u_idx), (i_idx)) in enumerate(zip(train_loader, u_h_loader, i_h_loader)): #pos: matrix contain seq[1->end], neg:
+                adam_optimizer.zero_grad()
+                u = np.array(u); seq = np.array(seq); pos = np.array(pos); neg = np.array(neg)
+                u_idx = u_idx.numpy()
+                i_idx = i_idx.numpy()
 
-        log(f"Users: {args.user}, Items(+1): {args.item}")
-        self.metrics = dict()
-        mets = ['loss', 'loss_main', 'hr@5', 'ndcg@5', 'hr@10', 'ndcg@10', 'hr@20', 'ndcg@20', 'hr@50', 'ndcg@50']
-        for met in mets:
-            self.metrics['Train' + met] = list()
-            self.metrics['Test' + met] = list()
+                loss = self.melt(u, seq, pos, neg, u_idx, i_idx, self.user_context, self.item_context, self.n_item_context, \
+                                  self.user_threshold, self.item_threshold, epoch, self.sasrec)
+                loss.backward()
+                adam_optimizer.step()
+                training_loss += loss.item()
 
-    def make_print(self, name, ep, reses, save):
-        ret = 'Epoch %d/%d, %s: ' % (ep, args.epoch, name)
-        for metric in reses:
-            val = reses[metric]
-            ret += '%s = %.4f, ' % (metric, val)
-            tem = name + metric
-            if save and tem in self.metrics:
-                self.metrics[tem].append(val)
-        ret = ret[:-2] + '                   '
-        return ret
+            if epoch % 2 == 0:
+                with torch.no_grad():
+                    self.sasrec.eval()
+                    self.melt.eval()
+                    result_valid = self.evaluate(self.melt, self.sasrec, k=10, is_valid='valid')
+                    best_valid = self.validcheck(result_valid, epoch, self.melt, f'{self.args.model}_{self.args.dataset}.pth')
+                    self.validcheck.print_epoch(result_valid, epoch, training_loss, self.args)
+        
+            # if epoch % 10 == 0:
+            #     print(f'Epoch: {epoch}, Evaluating: Dataset({self.args.dataset}), Loss: ({training_loss:.2f}), GPU: {self.args.gpu}')
+                
+        # Evaluation
+        with torch.no_grad():
+            self.sasrec.eval()
+            self.validcheck.best_model.eval()
+            result_5 = self.evaluate(self.validcheck.best_model, self.sasrec, k=5, is_valid='test')
+            result_10 = self.evaluate(self.validcheck.best_model, self.sasrec, k=10, is_valid='test')
+            result_20 = self.evaluate(self.validcheck.best_model, self.sasrec, k=20, is_valid='test')
+            result_50 = self.evaluate(self.validcheck.best_model, self.sasrec, k=50, is_valid='test')
+            self.validcheck.refine_test_result(result_5, result_10, result_20, result_50)
+            self.validcheck.print_result()
+   
+        # folder = f"save_model/{self.args.dataset}"
+        # os.makedirs(folder, exist_ok=True)
+        # torch.save(self.validcheck.best_model.state_dict(), os.path.join(folder, self.validcheck.best_name))
+        self.save_model()
+        self.validcheck.print_result()
 
-    def run(self):
-        self.prepare_model()
-        log('Model Prepared')
-        if args.load_model != None:
-            self.load_model()
-            stloc = len(self.metrics['Trainloss']) * args.test_frequency - (args.test_frequency - 1)
-        else:
-            stloc = 0
-            log('Model Initialized')
-        bestRes = None
-        reses = self.test_epoch()
-        for ep in range(stloc, args.epoch):
-            tst_flag = (ep % args.test_frequency == 0)
-            reses = self.train_epoch()
-            log(self.make_print('Train', ep, reses, tst_flag))
-            sys.stdout.flush()
-            if tst_flag:
-                reses = self.test_epoch()
-                log(self.make_print('Test', ep, reses, tst_flag))
-                sys.stdout.flush()
-                if bestRes is None or reses['hr@10'] > bestRes['hr@10']:
-                    bestRes = reses
-                    log(self.make_print('Best Result', args.epoch, bestRes, True), bold=True)
-                    self.save_history()
-            print()
-        reses = self.test_epoch(True)
-        log(self.make_print('Test', args.epoch, reses, True))
-        log(self.make_print('Best Result', args.epoch, bestRes, True), bold=True)
 
-    def prepare_model(self):
-        self.encoder = Encoder().cuda()
-        # self.decoder = Decoder().cuda()
-        self.recommender = SASRec().cuda()
-        # self.masker = RandomMaskSubgraphs()
-        # self.sampler = LocalGraph()
-        self.opt = t.optim.Adam(
-            [{"params": self.encoder.parameters()},
-             {"params": self.recommender.parameters()}],
-            lr=args.lr, weight_decay=0
-        )
+    def test(self):
+        set_random_seeds(self.args.seed)
+        user_max_thres = self.args.maxlen
+        item_max_thres = self.item_threshold + self.args.maxlen
+        self.sasrec = SASRec(self.args, self.item_num).to(self.device)
+        self.melt = MELT(self.args, self.logger, self.train_data, self.device, self.item_num, user_max_thres, item_max_thres, test=True).to(self.device)
+        self.inference_negative_sampler = NegativeSampler(self.args, self.dataset)
 
-    def sample_pos_edges(self, masked_edges):
-        return masked_edges[t.randperm(masked_edges.shape[0])[:args.con_batch]]
+        test_dataset = TestData(self.args, self.item_context, self.train_data, self.test_data, self.valid_data, self.inference_negative_sampler)
+        self.test_loader = data_utils.DataLoader(test_dataset, batch_size=self.args.batch_size, shuffle=True, drop_last=False)
+        self.printer = Checker(self.logger)
 
-    def sample_neg_edges(self, pos, dok):
-        neg = []
-        for u, v in pos:
-            cu_neg = []
-            num_samp = args.num_reco_neg // 2
-            for i in range(num_samp):
-                while True:
-                    v_neg = np.random.randint(1, args.item)
-                    if (u, v_neg) not in dok:
-                        break
-                cu_neg.append([u, v_neg])
-            for i in range(num_samp):
-                while True:
-                    u_neg = np.random.randint(1, args.item)
-                    if (u_neg, v) not in dok:
-                        break
-                cu_neg.append([u_neg, v])
-            neg.append(cu_neg)
-        return t.Tensor(neg).long()
+        os.makedirs(f"save_model/{self.args.dataset}", exist_ok=True)
 
-    def train_epoch(self):
-        self.encoder.train()
-        # self.decoder.train()
-        self.recommender.train()
-        # self.masker.train()
-        # self.sampler.train()
+        # model_path = f"save_model/{self.args.dataset}/{self.args.model}_{self.args.dataset}.pth"
+        # self.melt.load_state_dict(torch.load(model_path, map_location=torch.device(self.device)))
+        self.load_model()
+        self.sasrec.eval()
+        self.melt.eval()
 
-        loss_his = []
-        ep_loss, ep_loss_main, ep_loss_reco, ep_loss_mask = 0, 0, 0, 0
-        trn_loader = self.handler.trn_loader
-        steps = trn_loader.dataset.__len__() // args.trn_batch
+        # Evaluate
+        result_5 = self.evaluate(self.melt, self.sasrec, k=5, is_valid='test')
+        result_10 = self.evaluate(self.melt, self.sasrec, k=10, is_valid='test')
+        result_20 = self.evaluate(self.melt, self.sasrec, k=20, is_valid='test')
+        result_50 = self.evaluate(self.melt, self.sasrec, k=50, is_valid='test')
+        self.printer.refine_test_result(result_5, result_10, result_20, result_50)
+        self.printer.print_result()
 
-        for i, batch_data in enumerate(trn_loader):
 
-            # if i % args.mask_steps == 0:
-            #     sample_scr, candidates = self.sampler(self.handler.ii_adj_all_one, self.encoder.get_ego_embeds())
-            #     masked_adj, masked_edg = self.masker(self.handler.ii_adj, candidates)
-            batch_data = [i.cuda() for i in batch_data]
-            seq, pos, neg = batch_data
+    def evaluate(self, melt, sasrec, k, is_valid='test'):
+        """
+        Evaluation on validation or test set
+        """
+        HIT = 0.0  # Overall Hit
+        NDCG = 0.0 # Overall NDCG
+        
+        TAIL_USER_NDCG = 0.0
+        HEAD_USER_NDCG = 0.0
+        TAIL_ITEM_NDCG = 0.0
+        HEAD_ITEM_NDCG = 0.0
+        
+        TAIL_USER_HIT = 0.0
+        HEAD_USER_HIT = 0.0
+        TAIL_ITEM_HIT = 0.0
+        HEAD_ITEM_HIT = 0.0
+        
+        n_all_user = 0.0
+        n_head_user = 0.0
+        n_tail_user = 0.0
+        n_head_item = 0.0
+        n_tail_item = 0.0
+        
+        loader = self.test_loader if is_valid == 'test' else self.valid_loader
+        
+        for _, (u, seq, item_idx, test_idx) in enumerate(loader):
+            u_head = (self.u_head_set[None, ...] == u.numpy()[...,None]).nonzero()[0]         # Index of head users
+            u_tail = np.setdiff1d(np.arange(len(u)), u_head)                                  # Index of tail users
+            i_head = (self.i_head_set[None, ...] == test_idx.numpy()[...,None]).nonzero()[0]  # Index of head items
+            i_tail = np.setdiff1d(np.arange(len(u)), i_head)                                  # Index of tail items
+            
+            predictions = -sasrec.predict(seq.numpy(), item_idx.numpy(), u_tail, melt.user_branch.W_U) # Sequence Encoder
+            
+            rank = predictions.argsort(1).argsort(1)[:,0].cpu().numpy()
+            n_all_user += len(predictions)
+            hit_user = rank < k
+            ndcg = 1 / np.log2(rank + 2)
 
-            item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
-            seq_emb = self.recommender(seq, item_emb)
-            tar_msk = pos > 0
-            loss_main = cross_entropy(seq_emb, item_emb[pos], item_emb[neg], tar_msk)
+            n_head_user += len(u_head)
+            n_tail_user += len(u_tail)
+            n_head_item += len(i_head)
+            n_tail_item += len(i_tail)
+            
+            HIT += np.sum(hit_user).item()
+            HEAD_USER_HIT += sum(hit_user[u_head])
+            TAIL_USER_HIT += sum(hit_user[u_tail])
+            HEAD_ITEM_HIT += sum(hit_user[i_head])
+            TAIL_ITEM_HIT += sum(hit_user[i_tail])
+            
+            NDCG += np.sum(1 / np.log2(rank[hit_user] + 2)).item()
+            HEAD_ITEM_NDCG += sum(ndcg[i_head[hit_user[i_head]]])
+            TAIL_ITEM_NDCG += sum(ndcg[i_tail[hit_user[i_tail]]])
+            HEAD_USER_NDCG += sum(ndcg[u_head[hit_user[u_head]]])
+            TAIL_USER_NDCG += sum(ndcg[u_tail[hit_user[u_tail]]])
+            
+        result = {'Overall': {'NDCG': NDCG / n_all_user, 'HIT': HIT / n_all_user}, 
+                'Head_User': {'NDCG': HEAD_USER_NDCG / n_head_user, 'HIT': HEAD_USER_HIT / n_head_user},
+                'Tail_User': {'NDCG': TAIL_USER_NDCG / n_tail_user, 'HIT': TAIL_USER_HIT / n_tail_user},
+                'Head_Item': {'NDCG': HEAD_ITEM_NDCG / n_head_item, 'HIT': HEAD_ITEM_HIT / n_head_item},
+                'Tail_Item': {'NDCG': TAIL_ITEM_NDCG / n_tail_item, 'HIT': TAIL_ITEM_HIT / n_tail_item}
+                }
 
-            # pos = self.sample_pos_edges(masked_edg)
-            # neg = self.sample_neg_edges(pos, self.handler.ii_dok)
-            # loss_reco = self.decoder(item_emb_his, pos, neg)
+        return result
 
-            loss_regu = (calc_reg_loss(self.encoder) + calc_reg_loss(self.recommender)) * args.reg
-
-            loss = loss_main + loss_regu
-            loss_his.append(loss_main)
-
-            # if i % args.mask_steps == 0:
-                # reward = calc_reward(loss_his, args.eps)
-                # loss_mask = -sample_scr.mean() * reward
-                # ep_loss_mask += loss_mask
-                # loss_his = loss_his[-1:]
-                # loss += loss_mask
-
-            ep_loss += loss.item()
-            ep_loss_main += loss_main.item()
-            # ep_loss_reco += loss_reco.item()
-            log('Step %d/%d: loss = %.3f, loss_main = %.3f loss_regu = %.3f        ' % (i, steps, loss, loss_main, loss_regu), save=False, oneline=True)
-            sys.stdout.flush()
-
-            self.opt.zero_grad()
-            loss.backward()
-            self.opt.step()
-
-        ret = dict()
-        ret['loss'] = ep_loss / steps
-        ret['loss_main'] = ep_loss_main / steps
-        # ret['loss_reco'] = ep_loss_reco / steps
-        ret['loss_mask'] = ep_loss_mask / (steps // args.mask_steps)
-
-        return ret
-
-    def test_epoch(self, logPredict=False):
-        self.encoder.eval()
-        # self.decoder.eval()
-        self.recommender.eval()
-        # self.masker.eval()
-        # self.sampler.eval()
-
-        tst_loader = self.handler.tst_loader
-        ep_h5, ep_n5, ep_h10, ep_n10, ep_h20, ep_n20, ep_h50, ep_n50  = [0] * 8
-        group_h20 = [0] * 4
-        group_n20 = [0] * 4
-        group_num = [0] * 4
-        num = tst_loader.dataset.__len__()
-        steps = num // args.tst_batch
-
-        with t.no_grad():
-            for i, batch_data in enumerate(tst_loader):
-                batch_data = [i.cuda() for i in batch_data]
-                seq, pos, neg = batch_data
-                item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
-                seq_emb = self.recommender(seq, item_emb)
-                seq_emb = seq_emb[:,-1,:] # (batch, 1, latdim)
-                all_ids = t.arange(1, item_emb.shape[0]).unsqueeze(0).expand(seq.shape[0], -1).cuda() # (batch, 100)
-                all_emb = item_emb[all_ids] # (batch, 100, latdim)
-                all_scr = t.sum(t.unsqueeze(seq_emb, 1) * all_emb, -1) # (batch, 100)
-                seq_len = (seq > 0).cpu().numpy().sum(-1)
-                h5, n5, h10, n10, h20, n20, h50, n50, gp_h20, gp_n20, gp_num= \
-                    self.calc_res(all_scr.cpu().numpy(), all_ids.cpu().numpy(), pos.cpu().numpy(), seq_len, logPredict)
-                ep_h5 += h5
-                ep_n5 += n5
-                ep_h10 += h10
-                ep_n10 += n10
-                ep_h20 += h20
-                ep_n20 += n20
-                ep_h50 += h50
-                ep_n50 += n50
-                for j in range(4):
-                    group_h20[j] += gp_h20[j]
-                    group_n20[j] += gp_n20[j]
-                    group_num[j] += gp_num[j]
-                log('Steps %d/%d: hr@5 = %.2f, ndcg@5 = %.2f, hr@10 = %.2f, ndcg@10 = %.2f, hr@20 = %.2f, ndcg@20 = %.2f, hr@50 = %.2f, ndcg@50 = %.2f ' % (i, steps, h5, n5, h10, n10, h20, n20, h50, n50), save=False, oneline=True)
-                sys.stdout.flush()
-
-        ep_h5 /= num
-        ep_n5 /= num
-        ep_h10 /= num 
-        ep_n10 /= num 
-        ep_h20 /= num 
-        ep_n20 /= num 
-        ep_h50 /= num 
-        ep_n50 /= num 
-
-        for i in range(4):
-            group_h20[i] /= group_num[i]
-            group_n20[i] /= group_num[i]
-
-        ret = dict()
-        ret['hr@10'] = ep_h10
-        ret['ndcg@10'] = ep_n10
-        ret['hr@5'] = ep_h5
-        ret['ndcg@5'] = ep_n5
-        ret['hr@20'] = ep_h20
-        ret['ndcg@20'] = ep_n20
-        ret['hr@50'] = ep_h50
-        ret['ndcg@50'] = ep_n50
-
-        print(f'Test result: h5={ep_h5:.4f} n5={ep_n5:.4f} h10={ep_h10:.4f} n10={ep_n10:.4f} h20={ep_h20:.4f} n20={ep_n20:.4f} h50={ep_h50:.4f} n50={ep_n50:.4f}')
-
-        return ret
-
-    def calc_res(self, scores, tst_ids, pos_ids, seq_len, logPredict):
-        group_h20 = [0] * 4
-        group_n20 = [0] * 4
-        group_num = [0] * 4
-        h5, n5, h10, n10, h20, n20, h50, n50 = [0] * 8
-        for i in range(len(pos_ids)):
-            ids_with_scores = list(zip(tst_ids[i], scores[i]))
-            ids_with_scores = sorted(ids_with_scores, key=lambda x: x[1], reverse=True)
-            if seq_len[i] < 5:
-                group_num[0] += 1
-            elif seq_len[i] >= 5 and seq_len[i] < 10:
-                group_num[1] += 1
-            elif seq_len[i] >= 10 and seq_len[i] < 20:
-                group_num[2] += 1
-            else:
-                group_num[3] += 1
-            shoot = list(map(lambda x: x[0], ids_with_scores[:5]))
-            if pos_ids[i] in shoot:
-                h5 += 1
-                n5 += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
-            shoot = list(map(lambda x: x[0], ids_with_scores[:10]))
-            if pos_ids[i] in shoot:
-                h10 += 1
-                n10 += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
-            shoot = list(map(lambda x: x[0], ids_with_scores[:20]))
-            if pos_ids[i] in shoot:
-                if seq_len[i] < 5:
-                    group_h20[0] += 1
-                    group_n20[0] += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
-                elif seq_len[i] >= 5 and seq_len[i] < 10:
-                    group_h20[1] += 1
-                    group_n20[1] += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
-                elif seq_len[i] >= 10 and seq_len[i] < 20:
-                    group_h20[2] += 1
-                    group_n20[2] += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
-                else:
-                    group_h20[3] += 1
-                    group_n20[3] += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
-                h20 += 1
-                n20 += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
-            shoot = list(map(lambda x: x[0], ids_with_scores[:50]))
-            if pos_ids[i] in shoot:
-                h50 += 1
-                n50 += np.reciprocal(np.log2(shoot.index(pos_ids[i]) + 2))
-            if logPredict: 
-                self.writePredictedItems(shoot)
-        return h5, n5, h10, n10, h20, n20, h50, n50, group_h20, group_n20, group_num
-
-    def save_history(self):
-        if args.epoch == 0:
-            return
-
-        if not os.path.exists('./Models/'):
-                os.makedirs('./Models/')
-
-        if not os.path.exists('./History/'):
-                os.makedirs('./History/')
-
-        with open('./History/' + args.save_path + '.his', 'wb') as fs:
-            pickle.dump(self.metrics, fs)
+    def save_model(self):
+        folder = f"save_model/{self.args.dataset}"
+        os.makedirs(folder, exist_ok=True)
 
         content = {
-            'encoder': self.encoder,
-            'recommender': self.recommender,
+            'sasrec': self.sasrec.state_dict(),
+            'melt': self.validcheck.best_model.state_dict(),
         }
-        t.save(content, './Models/' + args.save_path + '.mod')
 
-        log('Model Saved: %s' % args.save_path)
+        torch.save(content, os.path.join(folder, self.validcheck.best_name))
 
     def load_model(self):
-        ckp = t.load('./Models/' + args.load_model + '.mod')
-        self.encoder = ckp['encoder']
-        # self.decoder= ckp['decoder']
-        self.recommender = ckp['recommender']
-        self.opt = t.optim.Adam(
-            [{"params": self.encoder.parameters()},
-             {"params": self.recommender.parameters()}],
-            lr=args.lr, weight_decay=0
-        )
+        folder = f"save_model/{self.args.dataset}/{self.args.model}_{self.args.dataset}.pth"
+        ckp = torch.load(folder)
+        self.sasrec.load_state_dict(ckp['sasrec'])
+        self.melt.load_state_dict(ckp['melt'])
 
-        with open('./History/' + args.load_model + '.his', 'rb') as fs:
-            self.metrics = pickle.load(fs)
+def main():
+    args = parse_args() 
+    torch.set_num_threads(4)
 
-        log('Model Loaded from ' + args.load_model)
-
-    def writePredictedItems(self, data):
-        with open('predicts.csv', 'a', encoding='UTF8') as f:
-            writer = csv.writer(f)
-            writer.writerow(data)
-
-if __name__ == '__main__':
-    logger.saveDefault = True
+    if args.model == "MELT":
+        embedder = Trainer(args)
     
-    print(args)
+    if args.inference:
+        embedder.test()
+    else:
+        embedder.train()
 
-    log('Start')
-    handler = DataHandler()
-    handler.load_data()
-    log('Load Data')
-
-    coach = Coach(handler)
-    coach.run()
+if __name__ == "__main__":
+    main()

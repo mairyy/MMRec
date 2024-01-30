@@ -1,63 +1,95 @@
-import torch as t
+import os
+import sys
+import copy
+import torch
+import random
 import numpy as np
-from params import args
-import torch.nn.functional as F
+from copy import deepcopy
+import logging
 
-def calc_reg_loss(model):
-    ret = 0
-    for W in model.parameters():
-        ret += W.norm(2).square()
-    return ret
 
-def contrast(nodes, allEmbeds, allEmbeds2=None):
-    if allEmbeds2 is not None:
-        pckEmbeds = allEmbeds[nodes]
-        scores = t.log(t.exp(pckEmbeds @ allEmbeds2.T).sum(-1)).mean()
-    else:
-        uniqNodes = t.unique(nodes)
-        pckEmbeds = allEmbeds[uniqNodes]
-        scores = t.log(t.exp(pckEmbeds @ allEmbeds.T).sum(-1)).mean()
-    return scores
+def set_random_seeds(seed):
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    
 
-def calc_reward(lastLosses, eps):
-    if len(lastLosses) < 3:
-        return 1.0
-    curDecrease = lastLosses[-2] - lastLosses[-1]
-    avgDecrease = 0
-    for i in range(len(lastLosses) - 2):
-        avgDecrease += lastLosses[i] - lastLosses[i + 1]
-    avgDecrease /= len(lastLosses) - 2
-    return 1 if curDecrease > avgDecrease else eps
 
-def calc_sigmoid_reward(lastLosses, eps):
-    if len(lastLosses) < 3:
-        return 1.0
-    curDecrease = lastLosses[-2] - lastLosses[-1]
-    avgDecrease = 0
-    for i in range(len(lastLosses) - 2):
-        avgDecrease += lastLosses[i] - lastLosses[i + 1]
-    avgDecrease /= len(lastLosses) - 2
-    return max(t.sigmoid(curDecrease.detach().cpu() / avgDecrease.detach().cpu()), eps)
+def setupt_logger(args, save_dir, name, filename = 'log.txt'):
+    os.makedirs(save_dir, exist_ok=True)
+    logger = logging.getLogger(name)
+    logger.setLevel(4)
 
-def calc_min_reward(lastLosses):
-    if len(lastLosses) < 3:
-        return 1.0
-    curDecrease = lastLosses[-2] - lastLosses[-1]
-    avgDecrease = 0
-    for i in range(len(lastLosses) - 2):
-        avgDecrease += lastLosses[i] - lastLosses[i + 1]
-    avgDecrease /= len(lastLosses) - 2
-    return min(curDecrease.detach().cpu().numpy() / avgDecrease.detach().cpu().numpy(), 1)
+    ch = logging.StreamHandler(stream=sys.stdout)
+    ch.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s %(name)s: %(message)s")
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
 
-def cross_entropy(seq_out, pos_emb, neg_emb, tar_msk):
-    seq_emb = seq_out.view(-1, args.latdim)
-    pos_emb = pos_emb.view(-1, args.latdim)
-    neg_emb = neg_emb.view(-1, args.latdim)
-    pos_scr = t.sum(pos_emb * seq_emb, -1)
-    neg_scr = t.sum(neg_emb * seq_emb, -1)
-    tar_msk = tar_msk.view(-1).float()
-    loss = t.sum(
-        - t.log(t.sigmoid(pos_scr) + 1e-24) * tar_msk -
-        t.log(1 - t.sigmoid(neg_scr) + 1e-24) * tar_msk
-    ) / t.sum(tar_msk)
-    return loss
+    if save_dir:
+        fh = logging.FileHandler(os.path.join(save_dir, filename))
+        
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
+    logger.info("================================================")
+    return logger
+
+class Checker(object):
+    def __init__(self, logger):
+        self.logger = logger
+        self.cur_tolerate = 0
+        self.best_val = {'Overall':{'HIT':-1}}
+        self.best_result_5 = None
+        self.best_result_10 = None
+        self.best_result_20 = None
+        self.best_result_50 = None
+        self.best_epoch = 0
+        self.best_model = None
+        self.best_name = None
+        # Pretrain
+        self.min_loss = 10000000.0
+
+
+    def print_result(self):
+        self.logger.info("==========================================================")
+        self.logger.info(f"Validation: HIT@10: {self.best_val['Overall']['HIT']:.4f}")
+        self.logger.info(f"Overall Result: NDCG@10: {self.best_result_10['Overall']['NDCG']:.4f}, HIT@10: {self.best_result_10['Overall']['HIT']:.4f}")
+        self.logger.info(f"Head User - NDCG@10({self.best_result_10['Head_User']['NDCG']:.4f}), Hit@10({self.best_result_10['Head_User']['HIT']:.4f})")
+        self.logger.info(f"Tail User - NDCG@10({self.best_result_10['Tail_User']['NDCG']:.4f}), Hit@10({self.best_result_10['Tail_User']['HIT']:.4f})")
+        self.logger.info(f"Head Item - NDCG@10({self.best_result_10['Head_Item']['NDCG']:.4f}), Hit@10({self.best_result_10['Head_Item']['HIT']:.4f})")
+        self.logger.info(f"Tail Item - NDCG@10({self.best_result_10['Tail_Item']['NDCG']:.4f}), Hit@10({self.best_result_10['Tail_Item']['HIT']:.4f})")
+        self.logger.info("======== Overall Result =======")
+        self.logger.info(f"NDCG@5: {self.best_result_5['Overall']['NDCG']:.4f}, HIT@5: {self.best_result_5['Overall']['HIT']:.4f}")
+        self.logger.info(f"NDCG@10: {self.best_result_10['Overall']['NDCG']:.4f}, HIT@10: {self.best_result_10['Overall']['HIT']:.4f}")
+        self.logger.info(f"NDCG@20: {self.best_result_20['Overall']['NDCG']:.4f}, HIT@20: {self.best_result_20['Overall']['HIT']:.4f}")
+        self.logger.info(f"NDCG@50: {self.best_result_50['Overall']['NDCG']:.4f}, HIT@50: {self.best_result_50['Overall']['HIT']:.4f}")
+
+    def print_epoch(self, cur_valid, epoch, training_loss, args):
+        print(f"Epoch: {epoch}, Loss: ({training_loss:.2f}), GPU: {args.gpu}, NDCG@10: {cur_valid['Overall']['NDCG']:.4f}, HIT@10: {cur_valid['Overall']['HIT']:.4f}")
+
+    def refine_test_result(self, result_5, result_10, result_20, result_50):
+        self.best_result_5 = result_5
+        self.best_result_10 = result_10
+        self.best_result_20 = result_20
+        self.best_result_50 = result_50
+        
+    def __call__(self, cur_valid, epoch, model, name):
+        """
+        For main training
+        """
+        if self.best_val['Overall']['HIT'] < cur_valid['Overall']['HIT']:
+            self.best_val = cur_valid
+            self.best_model = deepcopy(model)
+            self.best_epoch = epoch
+            self.best_name = name
+            return True
+        else:
+            return False
+
